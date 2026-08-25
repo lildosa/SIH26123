@@ -1,0 +1,51 @@
+digraph architecture {
+  rankdir=TB;
+  graph [fontname="Helvetica", bgcolor="white", splines=spline, nodesep=0.5, ranksep=0.7, label="SIH26123 — Decentralized AMR Fleet Architecture", labelloc=t, fontsize=20];
+  node [fontname="Helvetica", fontsize=11, style="rounded,filled", shape=box];
+  edge [fontname="Helvetica", fontsize=9];
+
+  subgraph cluster_r1 {
+    label="AMR #1 — Edge Node (Raspberry Pi / Jetson)";
+    style="rounded,filled"; fillcolor="#E8F4FD"; color="#2B6CB0"; fontsize=12;
+    loc1 [label="Localization\n(grid pose)", fillcolor="#BEE3F8"];
+    plan1 [label="Planner\nSpace-Time A* / D* Lite", fillcolor="#90CDF4"];
+    neg1 [label="Traffic Negotiator\nreservations + wait-for graph", fillcolor="#90CDF4"];
+    bid1 [label="Task Bidder\n(contract-net)", fillcolor="#90CDF4"];
+    ctl1 [label="Motion Controller", fillcolor="#63B3ED"];
+    loc1 -> plan1 -> neg1 -> ctl1;
+    bid1 -> plan1;
+  }
+
+  subgraph cluster_r2 {
+    label="AMR #2 — Edge Node";
+    style="rounded,filled"; fillcolor="#E8F4FD"; color="#2B6CB0"; fontsize=12;
+    loc2 [label="Localization", fillcolor="#BEE3F8"];
+    plan2 [label="Planner\nA* / D* Lite", fillcolor="#90CDF4"];
+    neg2 [label="Traffic Negotiator", fillcolor="#90CDF4"];
+    bid2 [label="Task Bidder", fillcolor="#90CDF4"];
+    ctl2 [label="Controller", fillcolor="#63B3ED"];
+    loc2 -> plan2 -> neg2 -> ctl2;
+    bid2 -> plan2;
+  }
+
+  subgraph cluster_r3 {
+    label="AMR #3 … #N — Edge Nodes";
+    style="rounded,filled"; fillcolor="#E8F4FD"; color="#2B6CB0"; fontsize=12;
+    dots [label="same stack per robot\n(self-contained process)", shape=plaintext, fillcolor="#E8F4FD"];
+  }
+
+  p2p [label="P2P MESH  (ZeroMQ PUB/SUB + UDP discovery)\npose 10 Hz · heartbeat 2 Hz · intent · reservations · auction/bids",
+       shape=cylinder, fillcolor="#FBD38D", color="#C05621", fontsize=12];
+
+  dash [label="Fleet Dashboard\npositions · battery · reserved windows · live metrics\nREAD-ONLY observer — never coordinates",
+        shape=note, fillcolor="#C6F6D5", color="#276749", fontsize=12];
+
+  events [label="Scenario Injector\nblocked aisle · robot kill · task bursts",
+          shape=component, fillcolor="#E9D8FD", color="#553C9A"];
+
+  neg1 -> p2p [dir=both, label="publish / subscribe"];
+  neg2 -> p2p [dir=both];
+  dots -> p2p [dir=both];
+  p2p -> dash [style=dashed, label="subscribe"];
+  events -> p2p [style=dotted, label="injects"];
+}
