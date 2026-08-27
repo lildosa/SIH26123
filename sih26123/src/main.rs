@@ -207,7 +207,7 @@ async fn main() {
             println!("Web Dashboard running at http://localhost:{}", port);
             println!("Interactive real-time fleet orchestration active.");
 
-            let mut tick_delay_ms = 150;
+            let mut tick_delay_ms = 120;
             let mut auto_spawn = true;
             let mut task_counter = 0;
             let mut total_collisions = 0;
@@ -247,6 +247,60 @@ async fn main() {
                             let p = pickups[task_counter % pickups.len()];
                             let d = dropoffs[(task_counter * 3 + 1) % dropoffs.len()];
                             runner.inject_task(p, d);
+                        }
+                        ControlCommand::CustomTask { pickup, dropoff } => {
+                            runner.inject_task(pickup, dropoff);
+                        }
+                        ControlCommand::ManualDispatch { robot_id, target } => {
+                            runner.dispatch_robot_to(robot_id, target);
+                        }
+                        ControlCommand::LoadScenario(sc_id) => {
+                            match sc_id {
+                                1 => {
+                                    // Head-On Bottleneck
+                                    runner = SimRunner::new(SimConfig {
+                                        num_robots: 2,
+                                        grid_width: 15,
+                                        grid_height: 15,
+                                        aisle_spacing: 3,
+                                        tasks: vec![(Pos::new(0, 0), Pos::new(14, 0)), (Pos::new(14, 0), Pos::new(0, 0))],
+                                        max_ticks: 1000,
+                                        kill_robot_at: None,
+                                        block_cell_at: None,
+                                        start_positions: vec![Pos::new(0, 0), Pos::new(14, 0)],
+                                    });
+                                }
+                                2 => {
+                                    // 4-Way Gridlock
+                                    runner = SimRunner::new(SimConfig {
+                                        num_robots: 4,
+                                        grid_width: 15,
+                                        grid_height: 15,
+                                        aisle_spacing: 3,
+                                        tasks: vec![
+                                            (Pos::new(7, 0), Pos::new(7, 14)),
+                                            (Pos::new(7, 14), Pos::new(7, 0)),
+                                            (Pos::new(0, 7), Pos::new(14, 7)),
+                                            (Pos::new(14, 7), Pos::new(0, 7)),
+                                        ],
+                                        max_ticks: 1000,
+                                        kill_robot_at: None,
+                                        block_cell_at: None,
+                                        start_positions: vec![Pos::new(7, 0), Pos::new(7, 14), Pos::new(0, 7), Pos::new(14, 7)],
+                                    });
+                                }
+                                3 => {
+                                    // Multi-task Rush
+                                    runner = SimRunner::new(make_config());
+                                    for i in 0..8 {
+                                        let p = pickups[i % pickups.len()];
+                                        let d = dropoffs[(i * 3 + 1) % dropoffs.len()];
+                                        runner.inject_task(p, d);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            total_collisions = 0;
                         }
                         ControlCommand::SetSpeed(ms) => {
                             tick_delay_ms = ms.clamp(20, 1000);

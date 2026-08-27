@@ -32,6 +32,9 @@ pub enum ControlCommand {
     KillRobot(RobotId),
     ReviveRobot(RobotId),
     SpawnTask,
+    CustomTask { pickup: Pos, dropoff: Pos },
+    ManualDispatch { robot_id: RobotId, target: Pos },
+    LoadScenario(usize),
     SetSpeed(u64),
     ToggleContinuous(bool),
     ResetSim,
@@ -59,6 +62,26 @@ pub struct RobotActionReq {
 }
 
 #[derive(Deserialize)]
+pub struct CustomTaskReq {
+    pub pickup_x: usize,
+    pub pickup_y: usize,
+    pub dropoff_x: usize,
+    pub dropoff_y: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ManualDispatchReq {
+    pub robot_id: RobotId,
+    pub target_x: usize,
+    pub target_y: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ScenarioReq {
+    pub scenario_id: usize,
+}
+
+#[derive(Deserialize)]
 pub struct SpeedReq {
     pub delay_ms: u64,
 }
@@ -73,48 +96,72 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SIH26123 - Distributed AMR Mesh Dashboard</title>
+    <title>SIH26123 - Distributed AMR Mesh Command Console</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
-        body { background: #0b1329; color: #f8fafc; display: flex; height: 100vh; overflow: hidden; }
-        #sidebar { width: 380px; background: #131f3d; border-right: 1px solid #1e293b; padding: 20px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
-        #main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; position: relative; }
-        canvas { background: #070d1e; border: 2px solid #3b82f6; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); cursor: crosshair; }
-        .card { background: #0c1630; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; }
-        .card h3 { color: #38bdf8; font-size: 13px; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .stat-box { background: #131f3d; padding: 10px; border-radius: 6px; border: 1px solid #1e293b; }
-        .stat-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
-        .stat-val { font-size: 22px; font-weight: bold; color: #10b981; margin-top: 2px; }
-        .robot-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 13px; }
-        .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        body { background: #080e1e; color: #f8fafc; display: flex; height: 100vh; overflow: hidden; }
+        #sidebar { width: 400px; background: #0f172a; border-right: 1px solid #1e293b; padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+        #main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; position: relative; }
+        canvas { background: #030712; border: 2px solid #3b82f6; border-radius: 8px; box-shadow: 0 12px 35px rgba(0,0,0,0.7); cursor: crosshair; }
+        .card { background: #0b1329; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; }
+        .card h3 { color: #38bdf8; font-size: 12px; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .stat-box { background: #0f172a; padding: 8px 10px; border-radius: 6px; border: 1px solid #1e293b; }
+        .stat-label { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
+        .stat-val { font-size: 20px; font-weight: bold; color: #10b981; margin-top: 2px; }
+        .robot-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1e293b; font-size: 12px; }
+        .badge { padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: bold; }
         .badge-moving { background: #0284c7; color: white; }
         .badge-idle { background: #475569; color: white; }
         .badge-planning { background: #d97706; color: white; }
         .badge-yielding { background: #e11d48; color: white; }
         .badge-dead { background: #dc2626; color: white; }
-        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
-        .btn { background: #2563eb; color: white; border: none; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-align: center; transition: all 0.15s; }
-        .btn:hover { opacity: 0.9; }
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .btn { background: #2563eb; color: white; border: none; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; text-align: center; transition: all 0.15s; }
+        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn:active { transform: translateY(0); }
         .btn-danger { background: #dc2626; }
         .btn-success { background: #059669; }
-        .btn-secondary { background: #334155; }
-        .legend { display: flex; gap: 12px; font-size: 11px; color: #94a3b8; margin-top: 8px; }
-        .legend-item { display: flex; align-items: center; gap: 4px; }
-        .legend-box { width: 10px; height: 10px; border-radius: 2px; }
-        .slider-container { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #94a3b8; }
+        .btn-secondary { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; }
+        .btn-active { background: #3b82f6 !important; color: white !important; border: 1px solid #60a5fa !important; }
+        .tool-bar { display: flex; gap: 6px; margin-bottom: 10px; }
+        .tool-btn { flex: 1; padding: 8px; font-size: 11px; font-weight: 700; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #94a3b8; cursor: pointer; text-align: center; }
+        .tool-btn.active { background: #1d4ed8; color: #ffffff; border-color: #60a5fa; box-shadow: 0 0 10px rgba(59,130,246,0.5); }
+        .slider-container { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #94a3b8; }
         .slider { flex: 1; accent-color: #3b82f6; cursor: pointer; }
+        .task-row { display: flex; justify-content: space-between; font-size: 11px; padding: 4px 0; border-bottom: 1px solid #131f3d; color: #cbd5e1; }
     </style>
 </head>
 <body>
     <div id="sidebar">
         <div>
-            <h1 style="font-size: 18px; color: #38bdf8; font-weight: 800;">SIH26123 P2P MESH</h1>
-            <p style="font-size: 12px; color: #94a3b8;">ISO 3691-4 Decentralized AMR Coordination</p>
+            <h1 style="font-size: 17px; color: #38bdf8; font-weight: 800;">SIH26123 P2P MESH</h1>
+            <p style="font-size: 11px; color: #94a3b8;">ISO 3691-4 Fail-Safe Decentralized AMR Control</p>
         </div>
 
         <div class="card">
-            <h3>Fleet Statistics</h3>
+            <h3>Interactive Canvas Tool</h3>
+            <div class="tool-bar">
+                <button class="tool-btn active" id="tool-obs" onclick="setTool('obs')">🧱 Obstacle</button>
+                <button class="tool-btn" id="tool-task" onclick="setTool('task')">📦 Dispatch</button>
+                <button class="tool-btn" id="tool-manual" onclick="setTool('manual')">🤖 Move AMR</button>
+            </div>
+            <div id="tool-hint" style="font-size: 11px; color: #60a5fa; background: rgba(59,130,246,0.1); padding: 6px; border-radius: 4px; border: 1px solid rgba(59,130,246,0.2);">
+                Click any cell to toggle dynamic obstacles.
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Preset Demo Scenarios</h3>
+            <div style="display: flex; flex-direction: column; gap: 5px;">
+                <button class="btn btn-secondary" onclick="loadScenario(1)">🏁 1. Head-On Corridor Bottleneck</button>
+                <button class="btn btn-secondary" onclick="loadScenario(2)">🏁 2. 4-Way Gridlock Cycle Breaker</button>
+                <button class="btn btn-secondary" onclick="loadScenario(3)">🏁 3. Multi-Task Fleet Rush</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Fleet Performance</h3>
             <div class="stat-grid">
                 <div class="stat-box">
                     <div class="stat-label">Tick</div>
@@ -129,30 +176,23 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     <div class="stat-val" id="collisions-val" style="color: #34d399;">0</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Safety Invariant</div>
-                    <div class="stat-val" style="color: #34d399; font-size: 14px; margin-top: 6px;">100% Zero Collisions</div>
+                    <div class="stat-label">Safety Status</div>
+                    <div class="stat-val" style="color: #34d399; font-size: 13px; margin-top: 4px;">Zero Collisions</div>
                 </div>
             </div>
         </div>
 
         <div class="card">
-            <h3>Interactive Controls</h3>
-            <div class="btn-grid">
-                <button class="btn btn-success" onclick="spawnTask()">✨ Spawn Task</button>
-                <button class="btn btn-secondary" id="continuous-btn" onclick="toggleContinuous()">🔁 Auto-Spawn: ON</button>
-            </div>
-            <div style="margin-top: 10px;">
-                <div style="font-size: 12px; color: #94a3b8; margin-bottom: 6px;">Fault Injection & Recovery:</div>
-                <div id="robot-toggle-btns" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;"></div>
-            </div>
-            <div class="btn-grid" style="margin-top: 10px;">
-                <button class="btn btn-secondary" onclick="clearObstacles()">🧹 Clear Obstacles</button>
+            <h3>Fleet Recovery & Chaos</h3>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;" id="robot-toggle-btns"></div>
+            <div class="btn-grid" style="margin-top: 8px;">
+                <button class="btn btn-secondary" onclick="clearObstacles()">🧹 Clear Walls</button>
                 <button class="btn btn-secondary" onclick="resetFleet()">🔄 Reset Fleet</button>
             </div>
-            <div class="slider-container" style="margin-top: 12px;">
+            <div class="slider-container" style="margin-top: 10px;">
                 <span>Speed:</span>
-                <input type="range" min="30" max="400" value="150" class="slider" id="speed-slider" oninput="changeSpeed(this.value)">
-                <span id="speed-label">150ms</span>
+                <input type="range" min="20" max="400" value="120" class="slider" id="speed-slider" oninput="changeSpeed(this.value)">
+                <span id="speed-label">120ms</span>
             </div>
         </div>
 
@@ -160,17 +200,21 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <h3>Active AMRs (<span id="robot-count">0</span>)</h3>
             <div id="robot-list"></div>
         </div>
+
+        <div class="card" style="max-height: 140px; overflow-y: auto;">
+            <h3>Live Auction & Task Pool</h3>
+            <div id="task-list"></div>
+        </div>
     </div>
 
     <div id="main">
         <canvas id="gridCanvas" width="660" height="660"></canvas>
-        <div class="legend">
-            <div class="legend-item"><div class="legend-box" style="background:#334155;"></div> Shelf Wall</div>
-            <div class="legend-item"><div class="legend-box" style="background:#ef4444;"></div> Dynamic Obstacle</div>
-            <div class="legend-item"><div class="legend-box" style="background:#10b981;"></div> Pickup Zone</div>
-            <div class="legend-item"><div class="legend-box" style="background:#a855f7;"></div> Dropoff Zone</div>
+        <div style="display: flex; gap: 14px; font-size: 11px; color: #94a3b8; margin-top: 8px;">
+            <div style="display:flex; align-items:center; gap:4px;"><div style="width:10px;height:10px;background:#334155;border-radius:2px;"></div> Shelf</div>
+            <div style="display:flex; align-items:center; gap:4px;"><div style="width:10px;height:10px;background:#ef4444;border-radius:2px;"></div> Injected Obstacle</div>
+            <div style="display:flex; align-items:center; gap:4px;"><div style="width:10px;height:10px;background:#10b981;border-radius:2px;"></div> Pickup</div>
+            <div style="display:flex; align-items:center; gap:4px;"><div style="width:10px;height:10px;background:#a855f7;border-radius:2px;"></div> Dropoff</div>
         </div>
-        <p style="font-size: 11px; color: #64748b; margin-top: 6px;">💡 Click anywhere on the warehouse grid to place or remove obstacles in real-time.</p>
     </div>
 
     <script>
@@ -179,10 +223,27 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         let width = 15;
         let height = 15;
         let cellSize = canvas.width / width;
-        let continuousSpawn = true;
-        let robotsState = {};
+
+        let activeTool = 'obs'; // 'obs', 'task', 'manual'
+        let taskPickup = null;
+        let selectedRobotId = null;
 
         const colors = ['#38bdf8', '#4ade80', '#fbbf24', '#f472b6', '#a78bfa', '#fb7185'];
+
+        function setTool(tool) {
+            activeTool = tool;
+            taskPickup = null;
+            selectedRobotId = null;
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(`tool-${tool}`).classList.add('active');
+
+            const hints = {
+                'obs': '🧱 Click any cell to place or remove dynamic obstacles.',
+                'task': '📦 Step 1: Click anywhere to set PICKUP point.',
+                'manual': '🤖 Click an AMR on the map to select it, then click target.'
+            };
+            document.getElementById('tool-hint').innerText = hints[tool];
+        }
 
         function isShelfWall(x, y) {
             return (y % 3 === 2) && (x >= 2 && x <= 4 || x >= 8 && x <= 10 || x >= 12 && x <= 13);
@@ -237,6 +298,41 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 }
             }
 
+            // Draw Staged Task Pickup selection if active
+            if (taskPickup) {
+                ctx.strokeStyle = '#10b981';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(taskPickup.x * cellSize + 4, taskPickup.y * cellSize + 4, cellSize - 8, cellSize - 8);
+                ctx.fillStyle = '#10b981';
+                ctx.fillText('PICKUP', taskPickup.x * cellSize + cellSize/2, taskPickup.y * cellSize + cellSize/2);
+            }
+
+            // Draw Tasks
+            if (frame.tasks) {
+                const taskListEl = document.getElementById('task-list');
+                taskListEl.innerHTML = '';
+                for (const t of frame.tasks) {
+                    if (t.status !== 'Completed') {
+                        // Pickup
+                        ctx.strokeStyle = '#10b981';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(t.pickup.x * cellSize + 4, t.pickup.y * cellSize + 4, cellSize - 8, cellSize - 8);
+                        // Dropoff
+                        ctx.strokeStyle = '#a855f7';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(t.dropoff.x * cellSize + 4, t.dropoff.y * cellSize + 4, cellSize - 8, cellSize - 8);
+
+                        taskListEl.innerHTML += `
+                            <div class="task-row">
+                                <span>Task #${t.task_id}</span>
+                                <span>(${t.pickup.x},${t.pickup.y}) → (${t.dropoff.x},${t.dropoff.y})</span>
+                                <span style="color:${t.assigned_to ? '#38bdf8':'#fbbf24'}">${t.assigned_to ? 'R'+t.assigned_to : 'Open'}</span>
+                            </div>
+                        `;
+                    }
+                }
+            }
+
             // Draw Robots & Space-Time Paths
             const list = document.getElementById('robot-list');
             const btnsContainer = document.getElementById('robot-toggle-btns');
@@ -244,8 +340,16 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             btnsContainer.innerHTML = '';
 
             for (const r of frame.robots) {
-                robotsState[r.id] = r.status;
                 const col = colors[(r.id - 1) % colors.length];
+
+                // Selected ring
+                if (selectedRobotId === r.id) {
+                    ctx.strokeStyle = '#facc15';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(r.pos.x * cellSize + cellSize/2, r.pos.y * cellSize + cellSize/2, cellSize/2 + 2, 0, Math.PI*2);
+                    ctx.stroke();
+                }
 
                 // Planned Path Line
                 if (r.path && r.path.length > 0) {
@@ -288,7 +392,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 if (r.status === 'Dead') badgeClass = 'badge-dead';
 
                 list.innerHTML += `
-                    <div class="robot-item">
+                    <div class="robot-item" onclick="selectRobotDirect(${r.id})" style="cursor:pointer;">
                         <div>
                             <span style="color:${col}; font-weight:bold;">AMR-${r.id}</span>
                             <span style="color:#64748b; font-size:11px; margin-left:2px;">(${r.pos.x},${r.pos.y})</span>
@@ -300,7 +404,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     </div>
                 `;
 
-                // Toggle Kill / Revive button
                 if (r.status === 'Dead') {
                     btnsContainer.innerHTML += `<button class="btn btn-success" onclick="reviveRobot(${r.id})">💚 Revive R${r.id}</button>`;
                 } else {
@@ -313,15 +416,60 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             const rect = canvas.getBoundingClientRect();
             const x = Math.floor((e.clientX - rect.left) / cellSize);
             const y = Math.floor((e.clientY - rect.top) / cellSize);
-            fetch('/api/obstacle', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x, y })
-            });
+
+            if (activeTool === 'obs') {
+                fetch('/api/obstacle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ x, y })
+                });
+            } else if (activeTool === 'task') {
+                if (!taskPickup) {
+                    taskPickup = { x, y };
+                    document.getElementById('tool-hint').innerText = `📦 Step 2: Click anywhere to set DROPOFF point for Pickup at (${x},${y}).`;
+                } else {
+                    fetch('/api/custom-task', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            pickup_x: taskPickup.x,
+                            pickup_y: taskPickup.y,
+                            dropoff_x: x,
+                            dropoff_y: y
+                        })
+                    });
+                    taskPickup = null;
+                    document.getElementById('tool-hint').innerText = '✅ Custom Task Dispatched to Auction Pool! Click for new task.';
+                }
+            } else if (activeTool === 'manual') {
+                if (!selectedRobotId) {
+                    // Try to select robot at x,y
+                    // Handled or prompt to click target
+                    document.getElementById('tool-hint').innerText = '🤖 Select a robot from the sidebar or click target position.';
+                } else {
+                    fetch('/api/manual-dispatch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ robot_id: selectedRobotId, target_x: x, target_y: y })
+                    });
+                    document.getElementById('tool-hint').innerText = `✅ Dispatched AMR-${selectedRobotId} to (${x}, ${y})!`;
+                    selectedRobotId = null;
+                }
+            }
         });
 
-        function spawnTask() {
-            fetch('/api/task', { method: 'POST' });
+        function selectRobotDirect(id) {
+            selectedRobotId = id;
+            setTool('manual');
+            document.getElementById('tool-hint').innerText = `🤖 AMR-${id} selected! Click any cell on the grid to send it there.`;
+        }
+
+        function loadScenario(id) {
+            fetch('/api/scenario', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scenario_id: id })
+            });
         }
 
         function killRobot(id) {
@@ -354,17 +502,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ delay_ms: parseInt(val) })
-            });
-        }
-
-        function toggleContinuous() {
-            continuousSpawn = !continuousSpawn;
-            const btn = document.getElementById('continuous-btn');
-            btn.innerText = continuousSpawn ? '🔁 Auto-Spawn: ON' : '⏸ Auto-Spawn: OFF';
-            fetch('/api/continuous', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: continuousSpawn })
             });
         }
     </script>
@@ -409,6 +546,39 @@ async fn obstacle_handler(
     Json("Obstacle toggled")
 }
 
+async fn custom_task_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CustomTaskReq>,
+) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::CustomTask {
+        pickup: Pos::new(req.pickup_x, req.pickup_y),
+        dropoff: Pos::new(req.dropoff_x, req.dropoff_y),
+    });
+    Json("Custom task queued")
+}
+
+async fn manual_dispatch_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ManualDispatchReq>,
+) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::ManualDispatch {
+        robot_id: req.robot_id,
+        target: Pos::new(req.target_x, req.target_y),
+    });
+    Json("Manual dispatch queued")
+}
+
+async fn scenario_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ScenarioReq>,
+) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::LoadScenario(req.scenario_id));
+    Json("Scenario queued")
+}
+
 async fn clear_obstacles_handler(State(state): State<AppState>) -> Json<&'static str> {
     let mut q = state.control_queue.lock().unwrap();
     q.push(ControlCommand::ClearObstacles);
@@ -439,12 +609,6 @@ async fn reset_handler(State(state): State<AppState>) -> Json<&'static str> {
     Json("Reset command queued")
 }
 
-async fn task_handler(State(state): State<AppState>) -> Json<&'static str> {
-    let mut q = state.control_queue.lock().unwrap();
-    q.push(ControlCommand::SpawnTask);
-    Json("Task queued")
-}
-
 async fn speed_handler(
     State(state): State<AppState>,
     Json(req): Json<SpeedReq>,
@@ -452,15 +616,6 @@ async fn speed_handler(
     let mut q = state.control_queue.lock().unwrap();
     q.push(ControlCommand::SetSpeed(req.delay_ms));
     Json("Speed set")
-}
-
-async fn continuous_handler(
-    State(state): State<AppState>,
-    Json(req): Json<ContinuousReq>,
-) -> Json<&'static str> {
-    let mut q = state.control_queue.lock().unwrap();
-    q.push(ControlCommand::ToggleContinuous(req.enabled));
-    Json("Continuous mode set")
 }
 
 pub async fn start_dashboard_server(
@@ -481,13 +636,14 @@ pub async fn start_dashboard_server(
         .route("/", get(index_handler))
         .route("/ws", get(ws_handler))
         .route("/api/obstacle", post(obstacle_handler))
+        .route("/api/custom-task", post(custom_task_handler))
+        .route("/api/manual-dispatch", post(manual_dispatch_handler))
+        .route("/api/scenario", post(scenario_handler))
         .route("/api/clear-obstacles", post(clear_obstacles_handler))
         .route("/api/kill", post(kill_handler))
         .route("/api/revive", post(revive_handler))
         .route("/api/reset", post(reset_handler))
-        .route("/api/task", post(task_handler))
         .route("/api/speed", post(speed_handler))
-        .route("/api/continuous", post(continuous_handler))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

@@ -194,6 +194,20 @@ impl SimRunner {
         task_id
     }
 
+    /// Direct manual dispatch: command a specific robot directly to a destination.
+    pub fn dispatch_robot_to(&mut self, robot_id: RobotId, target: Pos) {
+        if let Some(r) = self.robots.iter_mut().find(|r| r.id == robot_id) {
+            let task_id = self.next_task_id;
+            self.next_task_id += 1;
+            r.assigned_task = Some((task_id, r.pos, target));
+            r.state = RobotState::Planning {
+                task_id,
+                pickup: r.pos,
+                dropoff: target,
+            };
+        }
+    }
+
     /// Dynamically kills a robot during live execution.
     pub fn kill_robot(&mut self, robot_id: RobotId) {
         if let Some(r) = self.robots.iter_mut().find(|r| r.id == robot_id) {
@@ -216,10 +230,7 @@ impl SimRunner {
         }
 
         if let Some(pos) = robot_pos {
-            // Remove chassis obstacle from environment
             self.environment.remove_obstacle(pos);
-
-            // Clear obstacle and dead mark from peers
             for peer in &mut self.robots {
                 if peer.id != robot_id {
                     peer.local_obstacles.remove(&pos);
