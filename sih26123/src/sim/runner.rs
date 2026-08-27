@@ -2,7 +2,7 @@ use crate::network::in_memory::{InMemoryBus, InMemoryNode};
 use crate::network::Network;
 use crate::node::actor::RobotActor;
 use crate::node::environment::Environment;
-use crate::protocol::{RobotId, TaskId, Tick};
+use crate::protocol::{RobotId, TaskId, TaskState, TaskStatusMsg, Tick};
 use crate::world::{Cell, GridMap, Pos};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -49,6 +49,13 @@ impl SimEnvironment {
             g.set_cell(pos, Cell::Wall);
         }
     }
+
+    pub fn remove_obstacle(&self, pos: Pos) {
+        let mut g = self.ground_truth.write().unwrap();
+        if g.in_bounds(pos) {
+            g.set_cell(pos, Cell::Free);
+        }
+    }
 }
 
 impl Environment for SimEnvironment {
@@ -86,6 +93,7 @@ pub struct SimRunner {
     pub nodes: Vec<Arc<InMemoryNode>>,
     pub robots: Vec<RobotActor>,
     pub current_tick: Tick,
+    pub next_task_id: TaskId,
 }
 
 impl SimRunner {
@@ -120,17 +128,16 @@ impl SimRunner {
                 environment.clone(),
             );
 
-            // Register initial task pool
             for (idx, &(pickup, dropoff)) in config.tasks.iter().enumerate() {
                 let task_id = (idx + 1) as TaskId;
                 actor.known_tasks.insert(
                     task_id,
-                    crate::protocol::TaskStatusMsg {
+                    TaskStatusMsg {
                         task_id,
                         pickup,
                         dropoff,
                         assigned_to: None,
-                        status: crate::protocol::TaskState::Open,
+                        status: TaskState::Open,
                     },
                 );
             }
@@ -138,7 +145,6 @@ impl SimRunner {
             robots.push(actor);
         }
 
-        // Seed initial peer poses so robots are aware of each other's initial location
         for i in 0..robots.len() {
             let other_poses: Vec<(RobotId, Pos)> = robots
                 .iter()
@@ -152,6 +158,8 @@ impl SimRunner {
             }
         }
 
+        let next_task_id = (config.tasks.len() + 1) as TaskId;
+
         Self {
             config,
             grid,
@@ -160,23 +168,48 @@ impl SimRunner {
             nodes,
             robots,
             current_tick: 0,
+            next_task_id,
+        }
+    }
+
+    /// Dynamically injects a new pickup/dropoff task into the live auction pool.
+    pub fn inject_task(&mut self, pickup: Pos, dropoff: Pos) -> TaskId {
+        let task_id = self.next_task_id;
+        self.next_task_id += 1;
+
+        for robot in &mut self.robots {
+            robot.known_tasks.insert(
+                task_id,
+                TaskStatusMsg {
+                    task_id,
+                    pickup,
+                    dropoff,
+                    assigned_to: None,
+                    status: TaskState::Open,
+                },
+            );
+        }
+
+        task_id
+    }
+
+    /// Dynamically kills a robot during live execution.
+    pub fn kill_robot(&mut self, robot_id: RobotId) {
+        if let Some(r) = self.robots.iter_mut().find(|r| r.id == robot_id) {
+            r.state = crate::node::state::RobotState::Dead;
+            r.alive = false;
+            self.environment.inject_obstacle(r.pos);
         }
     }
 
     /// Advances the simulation by exactly one 5-phase synchronous tick.
-    /// Returns `(current_tick, vertex_collisions, edge_swap_collisions, completed_tasks_count)`.
     pub async fn step_tick(&mut self) -> (Tick, usize, usize, usize) {
         self.current_tick += 1;
         let tick = self.current_tick;
 
-        // Dynamic fault injection
         if let Some((kill_id, kill_tick)) = self.config.kill_robot_at {
             if tick == kill_tick {
-                if let Some(r) = self.robots.iter_mut().find(|r| r.id == kill_id) {
-                    r.state = crate::node::state::RobotState::Dead;
-                    r.alive = false;
-                    self.environment.inject_obstacle(r.pos);
-                }
+                self.kill_robot(kill_id);
             }
         }
 
@@ -240,7 +273,7 @@ impl SimRunner {
             .robots
             .iter()
             .flat_map(|r| r.known_tasks.values())
-            .filter(|t| t.status == crate::protocol::TaskState::Completed)
+            .filter(|t| t.status == TaskState::Completed)
             .map(|t| t.task_id)
             .collect::<HashSet<_>>()
             .len();
