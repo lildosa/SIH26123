@@ -340,13 +340,19 @@ async fn main() {
                     telemetry_list.push(r.telemetry_rx.borrow().clone());
                 }
 
-                let mut obs_list = Vec::new();
+                let mut static_list = Vec::new();
+                let mut dynamic_list = Vec::new();
+                let base_grid = runner.grid.clone();
                 let g = runner.environment.ground_truth.read().unwrap();
                 for y in 0..g.height {
                     for x in 0..g.width {
                         let p = Pos::new(x, y);
                         if g.get_cell(p) == Cell::Wall {
-                            obs_list.push(p);
+                            if base_grid.get_cell(p) == Cell::Wall {
+                                static_list.push(p);
+                            } else {
+                                dynamic_list.push(p);
+                            }
                         }
                     }
                 }
@@ -364,7 +370,8 @@ async fn main() {
                 let _ = telemetry_tx.send(DashboardFrame {
                     tick,
                     robots: telemetry_list,
-                    obstacles: obs_list,
+                    static_walls: static_list,
+                    dynamic_obstacles: dynamic_list,
                     tasks: all_tasks,
                     completed_count: completed,
                     collisions: total_collisions,
