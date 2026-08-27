@@ -85,6 +85,7 @@ pub struct SimRunner {
     pub bus: Arc<InMemoryBus>,
     pub nodes: Vec<Arc<InMemoryNode>>,
     pub robots: Vec<RobotActor>,
+    pub current_tick: Tick,
 }
 
 impl SimRunner {
@@ -158,94 +159,105 @@ impl SimRunner {
             bus,
             nodes,
             robots,
+            current_tick: 0,
         }
+    }
+
+    /// Advances the simulation by exactly one 5-phase synchronous tick.
+    /// Returns `(current_tick, vertex_collisions, edge_swap_collisions, completed_tasks_count)`.
+    pub async fn step_tick(&mut self) -> (Tick, usize, usize, usize) {
+        self.current_tick += 1;
+        let tick = self.current_tick;
+
+        // Dynamic fault injection
+        if let Some((kill_id, kill_tick)) = self.config.kill_robot_at {
+            if tick == kill_tick {
+                if let Some(r) = self.robots.iter_mut().find(|r| r.id == kill_id) {
+                    r.state = crate::node::state::RobotState::Dead;
+                    r.alive = false;
+                    self.environment.inject_obstacle(r.pos);
+                }
+            }
+        }
+
+        if let Some((block_pos, block_tick)) = self.config.block_cell_at {
+            if tick == block_tick {
+                self.environment.inject_obstacle(block_pos);
+            }
+        }
+
+        // Phase 1: Local Sensing
+        for robot in &mut self.robots {
+            robot.sense_phase();
+        }
+
+        // Phase 2: State Machine Decision
+        for i in 0..self.robots.len() {
+            let inbox = self.nodes[i].drain().await;
+            self.robots[i].decide_phase(inbox);
+        }
+
+        // Phase 3: Network Flush
+        for i in 0..self.robots.len() {
+            for env in self.robots[i].outbox.drain(..) {
+                let _ = self.nodes[i].broadcast(env).await;
+            }
+        }
+        self.bus.flush_tick();
+
+        // Phase 4: Simultaneous Movement Commit
+        let mut movements: Vec<(RobotId, Pos, Option<Pos>)> = Vec::new();
+        for robot in &mut self.robots {
+            let (prev, next) = robot.commit_movement();
+            movements.push((robot.id, prev, next));
+        }
+
+        // Phase 5: Evaluation & Collision Detection
+        let mut vertex_cols = 0;
+        let mut edge_cols = 0;
+        let num_robots = movements.len();
+
+        for i in 0..num_robots {
+            for j in (i + 1)..num_robots {
+                let curr_i = movements[i].2.unwrap_or(movements[i].1);
+                let curr_j = movements[j].2.unwrap_or(movements[j].1);
+
+                if curr_i == curr_j {
+                    vertex_cols += 1;
+                }
+
+                let prev_i = movements[i].1;
+                let prev_j = movements[j].1;
+                if let (Some(next_i), Some(next_j)) = (movements[i].2, movements[j].2) {
+                    if prev_i == next_j && prev_j == next_i && prev_i != next_i {
+                        edge_cols += 1;
+                    }
+                }
+            }
+        }
+
+        let completed = self
+            .robots
+            .iter()
+            .flat_map(|r| r.known_tasks.values())
+            .filter(|t| t.status == crate::protocol::TaskState::Completed)
+            .map(|t| t.task_id)
+            .collect::<HashSet<_>>()
+            .len();
+
+        (tick, vertex_cols, edge_cols, completed)
     }
 
     pub async fn run(&mut self) -> SimResult {
         let mut result = SimResult::default();
         let total_tasks = self.config.tasks.len();
 
-        for current_tick in 1..=self.config.max_ticks {
-            result.makespan = current_tick;
-
-            // Dynamic fault injection
-            if let Some((kill_id, kill_tick)) = self.config.kill_robot_at {
-                if current_tick == kill_tick {
-                    if let Some(r) = self.robots.iter_mut().find(|r| r.id == kill_id) {
-                        r.state = crate::node::state::RobotState::Dead;
-                        r.alive = false;
-                        self.environment.inject_obstacle(r.pos);
-                    }
-                }
-            }
-
-            if let Some((block_pos, block_tick)) = self.config.block_cell_at {
-                if current_tick == block_tick {
-                    self.environment.inject_obstacle(block_pos);
-                }
-            }
-
-            // Phase 1: Local Sensing
-            for robot in &mut self.robots {
-                robot.sense_phase();
-            }
-
-            // Phase 2: State Machine Decision
-            for i in 0..self.robots.len() {
-                let inbox = self.nodes[i].drain().await;
-                self.robots[i].decide_phase(inbox);
-            }
-
-            // Phase 3: Network Flush (Delivers outgoing envelopes for delivery at tick t+1)
-            for i in 0..self.robots.len() {
-                for env in self.robots[i].outbox.drain(..) {
-                    let _ = self.nodes[i].broadcast(env).await;
-                }
-            }
-            self.bus.flush_tick();
-
-            // Phase 4: Simultaneous Movement Commit
-            let mut movements: Vec<(RobotId, Pos, Option<Pos>)> = Vec::new();
-            for robot in &mut self.robots {
-                let (prev, next) = robot.commit_movement();
-                movements.push((robot.id, prev, next));
-            }
-
-            // Phase 5: Evaluation & Safety Invariant Verification
-            let num_robots = movements.len();
-            for i in 0..num_robots {
-                for j in (i + 1)..num_robots {
-                    let curr_i = movements[i].2.unwrap_or(movements[i].1);
-                    let curr_j = movements[j].2.unwrap_or(movements[j].1);
-
-                    // Vertex Collision
-                    if curr_i == curr_j {
-                        result.collisions += 1;
-                        result.vertex_collisions += 1;
-                    }
-
-                    // Edge Swap Collision
-                    let prev_i = movements[i].1;
-                    let prev_j = movements[j].1;
-                    if let (Some(next_i), Some(next_j)) = (movements[i].2, movements[j].2) {
-                        if prev_i == next_j && prev_j == next_i && prev_i != next_i {
-                            result.collisions += 1;
-                            result.edge_swap_collisions += 1;
-                        }
-                    }
-                }
-            }
-
-            // Check completed tasks
-            let completed = self
-                .robots
-                .iter()
-                .flat_map(|r| r.known_tasks.values())
-                .filter(|t| t.status == crate::protocol::TaskState::Completed)
-                .map(|t| t.task_id)
-                .collect::<HashSet<_>>()
-                .len();
-
+        while self.current_tick < self.config.max_ticks {
+            let (tick, vertex_cols, edge_cols, completed) = self.step_tick().await;
+            result.makespan = tick;
+            result.vertex_collisions += vertex_cols;
+            result.edge_swap_collisions += edge_cols;
+            result.collisions += vertex_cols + edge_cols;
             result.tasks_completed = completed;
 
             if completed >= total_tasks {

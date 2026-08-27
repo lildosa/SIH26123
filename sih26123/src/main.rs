@@ -180,11 +180,11 @@ async fn main() {
                 grid_width: width,
                 grid_height: height,
                 aisle_spacing,
-                tasks: task_list,
+                tasks: task_list.clone(),
                 max_ticks: 1000,
                 kill_robot_at: None,
                 block_cell_at: None,
-                start_positions: starts,
+                start_positions: starts.clone(),
             };
 
             let mut runner = SimRunner::new(config);
@@ -199,12 +199,11 @@ async fn main() {
                 start_dashboard_server(port, grid_arc, env_arc, telemetry_tx_clone).await;
             });
 
-            println!("Starting animated simulation stream...");
-            let mut tick = 0;
+            println!("Web Dashboard running at http://localhost:{}", port);
+            println!("Streaming real-time animation...");
+
             loop {
-                tick += 1;
-                // Run one step or batch
-                let _ = runner.run().await;
+                let (tick, _, _, _) = runner.step_tick().await;
 
                 let mut telemetry_list = Vec::new();
                 for r in &runner.robots {
@@ -228,7 +227,7 @@ async fn main() {
                     obstacles: obs_list,
                 });
 
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
         }
         None => {
