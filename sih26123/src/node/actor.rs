@@ -305,6 +305,9 @@ impl RobotActor {
 
         let mut tasks_to_reauction = Vec::new();
         for peer in dead_peers {
+            if let Some(&(dead_pos, _)) = self.peer_poses.get(&peer) {
+                self.local_obstacles.insert(dead_pos);
+            }
             self.local_reservations.remove_peer(peer);
             self.local_wfg.remove_robot(peer);
             self.last_heartbeats.remove(&peer);
@@ -512,44 +515,52 @@ impl RobotActor {
                         }
                         self.desired_next_pos = None;
                     } else {
-                        // Check if any peer will occupy next_pos at next_tick
-                        let mut next_pos_blocked = false;
-
-                        for peer in self.local_reservations.all_peer_intents() {
-                            let peer_at_next_pos = peer.path.iter().any(|&(p, t)| p == next_pos && t == next_tick);
-                            if peer_at_next_pos {
-                                let peer_prev = peer.path.iter().find(|&&(_, t)| t == self.current_tick).map(|&(p, _)| p);
-                                if peer_prev == Some(next_pos) {
-                                    // Peer was already sitting at next_pos -> physical occupancy blocks entry
-                                    next_pos_blocked = true;
-                                    break;
-                                } else {
-                                    // Both robots entering next_pos from outside at next_tick -> priority decides
-                                    if should_yield(self.id, self.current_intent_priority, peer.robot_id, peer.priority) {
-                                        next_pos_blocked = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // Edge swap check: peer moving from next_pos to self.pos at next_tick
-                            let peer_swapping = peer.path.windows(2).any(|w| {
-                                let (from_pos, from_t) = w[0];
-                                let (to_pos, to_t) = w[1];
-                                from_t == self.current_tick && to_t == next_tick && from_pos == next_pos && to_pos == self.pos
-                            });
-                            if peer_swapping && should_yield(self.id, self.current_intent_priority, peer.robot_id, peer.priority) {
-                                next_pos_blocked = true;
-                                break;
-                            }
-                        }
-
-                        // Also check latest known physical poses
+                        // 1. PHYSICAL OCCUPANCY: Check known physical positions
                         let occupied_now = self.peer_poses.iter().any(|(&p_id, &(p_pos, _))| {
                             p_id != self.id && p_pos == next_pos
                         });
 
-                        if next_pos_blocked || occupied_now {
+                        // 2. CONVERGENCE & REAL-TIME ESTIMATION with priority arbitration
+                        let mut must_yield_next_step = false;
+                        for peer in self.local_reservations.all_peer_intents() {
+                            if peer.robot_id == self.id {
+                                continue;
+                            }
+
+                            // Estimate peer's current real-time position factoring in 1-tick delay
+                            let (peer_curr_pos, peer_next_step) = if let Some(&(p_msg_pos, p_msg_tick)) = self.peer_poses.get(&peer.robot_id) {
+                                if let Some(idx) = peer.path.iter().position(|&(p, _)| p == p_msg_pos) {
+                                    let elapsed = (self.current_tick.saturating_sub(p_msg_tick)) as usize;
+                                    let curr = peer.path.get(idx + elapsed).map(|&(p, _)| p).unwrap_or(p_msg_pos);
+                                    let next = peer.path.get(idx + elapsed + 1).map(|&(p, _)| p);
+                                    (curr, next)
+                                } else {
+                                    (p_msg_pos, None)
+                                }
+                            } else {
+                                continue;
+                            };
+
+                            // If peer is currently occupying next_pos
+                            if peer_curr_pos == next_pos {
+                                must_yield_next_step = true;
+                                break;
+                            }
+
+                            // If peer is moving into next_pos at next tick
+                            if let Some(p_next) = peer_next_step {
+                                if p_next == next_pos && should_yield(self.id, self.current_intent_priority, peer.robot_id, peer.priority) {
+                                    must_yield_next_step = true;
+                                    break;
+                                }
+                                if p_next == self.pos && peer_curr_pos == next_pos && should_yield(self.id, self.current_intent_priority, peer.robot_id, peer.priority) {
+                                    must_yield_next_step = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if occupied_now || must_yield_next_step {
                             if let Some((task_id, pickup, dropoff)) = self.assigned_task {
                                 self.state = RobotState::Replanning { task_id, pickup, dropoff };
                             }

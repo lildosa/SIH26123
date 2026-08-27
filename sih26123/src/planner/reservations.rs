@@ -29,13 +29,9 @@ pub struct PeerConflict {
 }
 
 /// Explicit set of space-time constraints passed directly into Space-Time A*.
-/// Preserves multi-owner claims without flattening.
 #[derive(Debug, Clone, Default)]
 pub struct SpaceTimeConstraints {
-    /// Forbidden (Pos, Tick) cells. Multiple robots may forbid the same cell.
     pub forbidden_cells: HashSet<(Pos, Tick)>,
-    /// Forbidden directed edge transitions: (from_pos, to_pos, at_tick).
-    /// If another robot moves from B -> A at tick t -> t+1, then moving A -> B at tick t -> t+1 is forbidden.
     pub forbidden_edges: HashSet<(Pos, Pos, Tick)>,
 }
 
@@ -174,41 +170,60 @@ impl ReservationTable {
         constraints
     }
 
+    /// Constructs real-time synchronized SpaceTimeConstraints.
+    /// Synchronizes all peer paths from their current positions directly to upcoming execution ticks.
     pub fn build_constraints_with_stationary(
         &self,
         peer_poses: &HashMap<RobotId, (Pos, Tick)>,
         current_tick: Tick,
         horizon: Tick,
     ) -> SpaceTimeConstraints {
-        let mut constraints = self.build_constraints();
+        let mut constraints = SpaceTimeConstraints::default();
 
         for (&peer_id, &(peer_pos, _)) in peer_poses {
             if peer_id == self.own_id {
                 continue;
             }
 
-            // If peer has no announced future steps, it is currently sitting at peer_pos
-            let future_path_steps: Vec<(Pos, Tick)> = self
-                .peer_intents
-                .get(&peer_id)
-                .map(|rec| {
-                    rec.path
-                        .iter()
-                        .filter(|(_, t)| *t >= current_tick)
-                        .copied()
-                        .collect()
-                })
-                .unwrap_or_default();
+            // Peer's current position is forbidden for current tick and next tick
+            constraints.forbidden_cells.insert((peer_pos, current_tick));
+            constraints.forbidden_cells.insert((peer_pos, current_tick + 1));
 
-            if future_path_steps.is_empty() {
+            // Check peer's announced path
+            let mut remaining_steps: Vec<Pos> = Vec::new();
+            if let Some(peer_intent) = self.peer_intents.get(&peer_id) {
+                if let Some(curr_idx) = peer_intent.path.iter().position(|&(p, _)| p == peer_pos) {
+                    remaining_steps = peer_intent.path[curr_idx..].iter().map(|&(p, _)| p).collect();
+                }
+            }
+
+            if remaining_steps.is_empty() {
+                // Fully stationary peer -> forbid peer_pos for entire horizon
                 for t in current_tick..=(current_tick + horizon) {
                     constraints.forbidden_cells.insert((peer_pos, t));
                 }
             } else {
-                // If peer has a future path, where does it end?
-                // After reaching its path endpoint, it sits at that endpoint for the remaining horizon!
-                if let Some(&(end_pos, end_tick)) = future_path_steps.last() {
-                    for t in (end_tick + 1)..=(current_tick + horizon) {
+                // Moving peer -> map remaining steps to real execution ticks
+                for (offset, &p_pos) in remaining_steps.iter().enumerate() {
+                    let step_tick = current_tick + offset as u64;
+                    constraints.forbidden_cells.insert((p_pos, step_tick));
+                }
+
+                for (offset, window) in remaining_steps.windows(2).enumerate() {
+                    let p_from = window[0];
+                    let p_to = window[1];
+                    let step_tick = current_tick + offset as u64;
+                    if p_from != p_to {
+                        constraints
+                            .forbidden_edges
+                            .insert((p_to, p_from, step_tick));
+                    }
+                }
+
+                // After reaching destination, peer stays at endpoint for remainder of horizon
+                if let Some(&end_pos) = remaining_steps.last() {
+                    let end_tick = current_tick + remaining_steps.len() as u64;
+                    for t in end_tick..=(current_tick + horizon) {
                         constraints.forbidden_cells.insert((end_pos, t));
                     }
                 }

@@ -1,1 +1,3 @@
-// Passive web dashboard module placeholder
+pub mod server;
+
+pub use server::{start_dashboard_server, AppState, DashboardFrame};
