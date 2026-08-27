@@ -2,6 +2,7 @@ use crate::network::in_memory::{InMemoryBus, InMemoryNode};
 use crate::network::Network;
 use crate::node::actor::RobotActor;
 use crate::node::environment::Environment;
+use crate::node::state::RobotState;
 use crate::protocol::{RobotId, TaskId, TaskState, TaskStatusMsg, Tick};
 use crate::world::{Cell, GridMap, Pos};
 use serde::{Deserialize, Serialize};
@@ -196,9 +197,36 @@ impl SimRunner {
     /// Dynamically kills a robot during live execution.
     pub fn kill_robot(&mut self, robot_id: RobotId) {
         if let Some(r) = self.robots.iter_mut().find(|r| r.id == robot_id) {
-            r.state = crate::node::state::RobotState::Dead;
+            r.state = RobotState::Dead;
             r.alive = false;
             self.environment.inject_obstacle(r.pos);
+        }
+    }
+
+    /// Dynamically revives a dead robot back to service.
+    pub fn revive_robot(&mut self, robot_id: RobotId) {
+        let mut robot_pos = None;
+        if let Some(r) = self.robots.iter_mut().find(|r| r.id == robot_id) {
+            r.state = RobotState::Idle;
+            r.alive = true;
+            r.battery = 1.0;
+            r.assigned_task = None;
+            r.desired_next_pos = None;
+            robot_pos = Some(r.pos);
+        }
+
+        if let Some(pos) = robot_pos {
+            // Remove chassis obstacle from environment
+            self.environment.remove_obstacle(pos);
+
+            // Clear obstacle and dead mark from peers
+            for peer in &mut self.robots {
+                if peer.id != robot_id {
+                    peer.local_obstacles.remove(&pos);
+                    peer.last_heartbeats.insert(robot_id, self.current_tick);
+                    peer.peer_poses.insert(robot_id, (pos, self.current_tick));
+                }
+            }
         }
     }
 

@@ -178,7 +178,7 @@ async fn main() {
                 }
             }
 
-            let config = SimConfig {
+            let make_config = || SimConfig {
                 num_robots: robots,
                 grid_width: width,
                 grid_height: height,
@@ -190,7 +190,7 @@ async fn main() {
                 start_positions: starts.clone(),
             };
 
-            let mut runner = SimRunner::new(config);
+            let mut runner = SimRunner::new(make_config());
             let (telemetry_tx, _) = broadcast::channel(100);
             let control_queue = Arc::new(Mutex::new(Vec::new()));
 
@@ -210,7 +210,6 @@ async fn main() {
             let mut tick_delay_ms = 150;
             let mut auto_spawn = true;
             let mut task_counter = 0;
-            let mut total_completed = 0;
             let mut total_collisions = 0;
 
             loop {
@@ -235,6 +234,13 @@ async fn main() {
                         }
                         ControlCommand::KillRobot(id) => {
                             runner.kill_robot(id);
+                        }
+                        ControlCommand::ReviveRobot(id) => {
+                            runner.revive_robot(id);
+                        }
+                        ControlCommand::ResetSim => {
+                            runner = SimRunner::new(make_config());
+                            total_collisions = 0;
                         }
                         ControlCommand::SpawnTask => {
                             task_counter += 1;
@@ -273,7 +279,6 @@ async fn main() {
                 // 3. Advance simulation tick
                 let (tick, vertex_cols, edge_cols, completed) = runner.step_tick().await;
                 total_collisions += vertex_cols + edge_cols;
-                total_completed = completed;
 
                 // 4. Gather telemetry frame
                 let mut telemetry_list = Vec::new();
@@ -307,7 +312,7 @@ async fn main() {
                     robots: telemetry_list,
                     obstacles: obs_list,
                     tasks: all_tasks,
-                    completed_count: total_completed,
+                    completed_count: completed,
                     collisions: total_collisions,
                 });
 

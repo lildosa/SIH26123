@@ -30,9 +30,11 @@ pub enum ControlCommand {
     RemoveObstacle(Pos),
     ClearObstacles,
     KillRobot(RobotId),
+    ReviveRobot(RobotId),
     SpawnTask,
     SetSpeed(u64),
     ToggleContinuous(bool),
+    ResetSim,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +54,7 @@ pub struct ObstacleReq {
 }
 
 #[derive(Deserialize)]
-pub struct KillReq {
+pub struct RobotActionReq {
     pub robot_id: RobotId,
 }
 
@@ -92,14 +94,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         .badge-yielding { background: #e11d48; color: white; }
         .badge-dead { background: #dc2626; color: white; }
         .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
-        .btn { background: #2563eb; color: white; border: none; padding: 9px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-align: center; transition: background 0.15s; }
-        .btn:hover { background: #1d4ed8; }
+        .btn { background: #2563eb; color: white; border: none; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-align: center; transition: all 0.15s; }
+        .btn:hover { opacity: 0.9; }
         .btn-danger { background: #dc2626; }
-        .btn-danger:hover { background: #b91c1c; }
         .btn-success { background: #059669; }
-        .btn-success:hover { background: #047857; }
         .btn-secondary { background: #334155; }
-        .btn-secondary:hover { background: #475569; }
         .legend { display: flex; gap: 12px; font-size: 11px; color: #94a3b8; margin-top: 8px; }
         .legend-item { display: flex; align-items: center; gap: 4px; }
         .legend-box { width: 10px; height: 10px; border-radius: 2px; }
@@ -143,16 +142,12 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 <button class="btn btn-secondary" id="continuous-btn" onclick="toggleContinuous()">🔁 Auto-Spawn: ON</button>
             </div>
             <div style="margin-top: 10px;">
-                <div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">Inject Node Failure:</div>
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;">
-                    <button class="btn btn-danger" onclick="killRobot(1)">Kill R1</button>
-                    <button class="btn btn-danger" onclick="killRobot(2)">Kill R2</button>
-                    <button class="btn btn-danger" onclick="killRobot(3)">Kill R3</button>
-                    <button class="btn btn-danger" onclick="killRobot(4)">Kill R4</button>
-                </div>
+                <div style="font-size: 12px; color: #94a3b8; margin-bottom: 6px;">Fault Injection & Recovery:</div>
+                <div id="robot-toggle-btns" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;"></div>
             </div>
             <div class="btn-grid" style="margin-top: 10px;">
                 <button class="btn btn-secondary" onclick="clearObstacles()">🧹 Clear Obstacles</button>
+                <button class="btn btn-secondary" onclick="resetFleet()">🔄 Reset Fleet</button>
             </div>
             <div class="slider-container" style="margin-top: 12px;">
                 <span>Speed:</span>
@@ -170,10 +165,10 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     <div id="main">
         <canvas id="gridCanvas" width="660" height="660"></canvas>
         <div class="legend">
-            <div class="legend-item"><div class="legend-box" style="background:#475569;"></div> Shelf Wall</div>
-            <div class="legend-item"><div class="legend-box" style="background:#ef4444;"></div> Injected Obstacle</div>
-            <div class="legend-item"><div class="legend-box" style="background:#10b981;"></div> Pickup Point</div>
-            <div class="legend-item"><div class="legend-box" style="background:#a855f7;"></div> Dropoff Goal</div>
+            <div class="legend-item"><div class="legend-box" style="background:#334155;"></div> Shelf Wall</div>
+            <div class="legend-item"><div class="legend-box" style="background:#ef4444;"></div> Dynamic Obstacle</div>
+            <div class="legend-item"><div class="legend-box" style="background:#10b981;"></div> Pickup Zone</div>
+            <div class="legend-item"><div class="legend-box" style="background:#a855f7;"></div> Dropoff Zone</div>
         </div>
         <p style="font-size: 11px; color: #64748b; margin-top: 6px;">💡 Click anywhere on the warehouse grid to place or remove obstacles in real-time.</p>
     </div>
@@ -185,8 +180,13 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         let height = 15;
         let cellSize = canvas.width / width;
         let continuousSpawn = true;
+        let robotsState = {};
 
         const colors = ['#38bdf8', '#4ade80', '#fbbf24', '#f472b6', '#a78bfa', '#fb7185'];
+
+        function isShelfWall(x, y) {
+            return (y % 3 === 2) && (x >= 2 && x <= 4 || x >= 8 && x <= 10 || x >= 12 && x <= 13);
+        }
 
         const ws = new WebSocket(`ws://${location.host}/ws`);
         ws.onmessage = (e) => {
@@ -198,7 +198,20 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Draw Grid
+            // Draw Zones
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    if (x < width / 3) {
+                        ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
+                        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                    } else if (x >= (width * 2) / 3) {
+                        ctx.fillStyle = 'rgba(168, 85, 247, 0.15)';
+                        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                    }
+                }
+            }
+
+            // Draw Grid Lines
             ctx.strokeStyle = '#1e293b';
             ctx.lineWidth = 1;
             for (let i = 0; i <= width; i++) {
@@ -212,44 +225,32 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 ctx.stroke();
             }
 
-            // Draw Static and Dynamic Obstacles
+            // Draw Obstacles
             for (const obs of frame.obstacles) {
-                ctx.fillStyle = '#334155';
+                const isShelf = isShelfWall(obs.x, obs.y);
+                ctx.fillStyle = isShelf ? '#334155' : '#ef4444';
                 ctx.fillRect(obs.x * cellSize + 2, obs.y * cellSize + 2, cellSize - 4, cellSize - 4);
-            }
-
-            // Draw Active Tasks (Pickups & Dropoffs)
-            if (frame.tasks) {
-                for (const t of frame.tasks) {
-                    if (t.status === 'Open' || t.status === 'Assigned' || t.status === 'InProgress') {
-                        // Pickup Marker (Green)
-                        ctx.fillStyle = 'rgba(16, 185, 129, 0.4)';
-                        ctx.fillRect(t.pickup.x * cellSize + 4, t.pickup.y * cellSize + 4, cellSize - 8, cellSize - 8);
-                        ctx.strokeStyle = '#10b981';
-                        ctx.lineWidth = 2;
-                        ctx.strokeRect(t.pickup.x * cellSize + 4, t.pickup.y * cellSize + 4, cellSize - 8, cellSize - 8);
-
-                        // Dropoff Marker (Purple)
-                        ctx.fillStyle = 'rgba(168, 85, 247, 0.4)';
-                        ctx.fillRect(t.dropoff.x * cellSize + 4, t.dropoff.y * cellSize + 4, cellSize - 8, cellSize - 8);
-                        ctx.strokeStyle = '#a855f7';
-                        ctx.lineWidth = 2;
-                        ctx.strokeRect(t.dropoff.x * cellSize + 4, t.dropoff.y * cellSize + 4, cellSize - 8, cellSize - 8);
-                    }
+                if (!isShelf) {
+                    ctx.strokeStyle = '#fca5a5';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(obs.x * cellSize + 2, obs.y * cellSize + 2, cellSize - 4, cellSize - 4);
                 }
             }
 
             // Draw Robots & Space-Time Paths
             const list = document.getElementById('robot-list');
+            const btnsContainer = document.getElementById('robot-toggle-btns');
             list.innerHTML = '';
+            btnsContainer.innerHTML = '';
 
             for (const r of frame.robots) {
+                robotsState[r.id] = r.status;
                 const col = colors[(r.id - 1) % colors.length];
 
                 // Planned Path Line
                 if (r.path && r.path.length > 0) {
                     ctx.strokeStyle = col;
-                    ctx.lineWidth = 2.5;
+                    ctx.lineWidth = 3;
                     ctx.beginPath();
                     ctx.moveTo(r.pos.x * cellSize + cellSize/2, r.pos.y * cellSize + cellSize/2);
                     for (const p of r.path) {
@@ -257,7 +258,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     }
                     ctx.stroke();
 
-                    // Endpoint dot
                     const lastP = r.path[r.path.length - 1];
                     ctx.fillStyle = col;
                     ctx.beginPath();
@@ -271,19 +271,16 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 ctx.arc(r.pos.x * cellSize + cellSize/2, r.pos.y * cellSize + cellSize/2, cellSize/2 - 4, 0, Math.PI * 2);
                 ctx.fill();
 
-                // Robot Border
                 ctx.strokeStyle = '#ffffff';
-                ctx.lineWidth = 1.5;
+                ctx.lineWidth = 2;
                 ctx.stroke();
 
-                // Label
                 ctx.fillStyle = '#000';
                 ctx.font = 'bold 11px sans-serif';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(`R${r.id}`, r.pos.x * cellSize + cellSize/2, r.pos.y * cellSize + cellSize/2);
 
-                // Sidebar Info
                 let badgeClass = 'badge-idle';
                 if (r.status === 'Moving') badgeClass = 'badge-moving';
                 if (r.status === 'Planning') badgeClass = 'badge-planning';
@@ -302,6 +299,13 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                 `;
+
+                // Toggle Kill / Revive button
+                if (r.status === 'Dead') {
+                    btnsContainer.innerHTML += `<button class="btn btn-success" onclick="reviveRobot(${r.id})">💚 Revive R${r.id}</button>`;
+                } else {
+                    btnsContainer.innerHTML += `<button class="btn btn-danger" onclick="killRobot(${r.id})">⚡ Kill R${r.id}</button>`;
+                }
             }
         };
 
@@ -328,6 +332,18 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             });
         }
 
+        function reviveRobot(id) {
+            fetch('/api/revive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ robot_id: id })
+            });
+        }
+
+        function resetFleet() {
+            fetch('/api/reset', { method: 'POST' });
+        }
+
         function clearObstacles() {
             fetch('/api/clear-obstacles', { method: 'POST' });
         }
@@ -345,7 +361,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             continuousSpawn = !continuousSpawn;
             const btn = document.getElementById('continuous-btn');
             btn.innerText = continuousSpawn ? '🔁 Auto-Spawn: ON' : '⏸ Auto-Spawn: OFF';
-            btn.className = continuousSpawn ? 'btn btn-secondary' : 'btn btn-secondary';
             fetch('/api/continuous', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -402,11 +417,26 @@ async fn clear_obstacles_handler(State(state): State<AppState>) -> Json<&'static
 
 async fn kill_handler(
     State(state): State<AppState>,
-    Json(req): Json<KillReq>,
+    Json(req): Json<RobotActionReq>,
 ) -> Json<&'static str> {
     let mut q = state.control_queue.lock().unwrap();
     q.push(ControlCommand::KillRobot(req.robot_id));
     Json("Kill command queued")
+}
+
+async fn revive_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RobotActionReq>,
+) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::ReviveRobot(req.robot_id));
+    Json("Revive command queued")
+}
+
+async fn reset_handler(State(state): State<AppState>) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::ResetSim);
+    Json("Reset command queued")
 }
 
 async fn task_handler(State(state): State<AppState>) -> Json<&'static str> {
@@ -453,6 +483,8 @@ pub async fn start_dashboard_server(
         .route("/api/obstacle", post(obstacle_handler))
         .route("/api/clear-obstacles", post(clear_obstacles_handler))
         .route("/api/kill", post(kill_handler))
+        .route("/api/revive", post(revive_handler))
+        .route("/api/reset", post(reset_handler))
         .route("/api/task", post(task_handler))
         .route("/api/speed", post(speed_handler))
         .route("/api/continuous", post(continuous_handler))
