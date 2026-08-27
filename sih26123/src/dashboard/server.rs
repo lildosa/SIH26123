@@ -35,6 +35,7 @@ pub enum ControlCommand {
     CustomTask { pickup: Pos, dropoff: Pos },
     ManualDispatch { robot_id: RobotId, target: Pos },
     LoadScenario(usize),
+    SetFleetSize(usize),
     SetSpeed(u64),
     ToggleContinuous(bool),
     ResetSim,
@@ -83,6 +84,11 @@ pub struct ScenarioReq {
 }
 
 #[derive(Deserialize)]
+pub struct FleetSizeReq {
+    pub size: usize,
+}
+
+#[derive(Deserialize)]
 pub struct SpeedReq {
     pub delay_ms: u64,
 }
@@ -96,7 +102,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
         body { background: #111215; color: #e4e4e7; display: flex; height: 100vh; overflow: hidden; }
-        #sidebar { width: 390px; background: #18191e; border-right: 1px solid #27272a; padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+        #sidebar { width: 400px; background: #18191e; border-right: 1px solid #27272a; padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
         #main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; position: relative; background: #0c0d0e; }
         canvas { background: #14151a; border: 1px solid #3f3f46; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.8); cursor: crosshair; }
         .card { background: #1e1f26; border: 1px solid #2e2f38; border-radius: 4px; padding: 12px; }
@@ -107,7 +113,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         .stat-val { font-size: 18px; font-weight: 700; color: #f4f4f5; margin-top: 2px; }
         .stat-val-green { color: #10b981; }
         .stat-val-amber { color: #f59e0b; }
-        .robot-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #27272a; font-size: 11px; }
+        .robot-item { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #27272a; font-size: 11px; }
         .badge { padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
         .badge-moving { background: #27272a; color: #38bdf8; border: 1px solid #38bdf8; }
         .badge-idle { background: #27272a; color: #71717a; border: 1px solid #3f3f46; }
@@ -122,8 +128,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         .btn-danger:hover { background: #991b1b; color: #ffffff; }
         .btn-restore { border-color: #065f46; color: #34d399; }
         .btn-restore:hover { background: #047857; color: #ffffff; }
-        .btn-amber { border-color: #78350f; color: #fbbf24; }
-        .btn-amber:hover { background: #b45309; color: #ffffff; }
         .tool-bar { display: flex; gap: 4px; margin-bottom: 8px; }
         .tool-btn { flex: 1; padding: 7px 4px; font-size: 10px; font-weight: 700; border-radius: 3px; border: 1px solid #3f3f46; background: #14151a; color: #a1a1aa; cursor: pointer; text-align: center; text-transform: uppercase; }
         .tool-btn.active { background: #f59e0b; color: #000000; border-color: #f59e0b; font-weight: 800; }
@@ -138,6 +142,17 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         <div>
             <div style="font-size: 14px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">SIH26123 P2P MESH</div>
             <div style="font-size: 10px; color: #71717a; letter-spacing: 0.3px;">ISO 3691-4 DISTRIBUTED AMR ORCHESTRATION</div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Fleet Scale (AMRs)</div>
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px;">
+                <button class="tool-btn" id="scale-2" onclick="setFleetScale(2)">2 AMRs</button>
+                <button class="tool-btn active" id="scale-4" onclick="setFleetScale(4)">4 AMRs</button>
+                <button class="tool-btn" id="scale-6" onclick="setFleetScale(6)">6 AMRs</button>
+                <button class="tool-btn" id="scale-8" onclick="setFleetScale(8)">8 AMRs</button>
+                <button class="tool-btn" id="scale-10" onclick="setFleetScale(10)">10 AMRs</button>
+            </div>
         </div>
 
         <div class="card">
@@ -185,7 +200,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 
         <div class="card">
             <div class="card-header">Node Control & Recovery</div>
-            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;" id="robot-toggle-btns"></div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; max-height: 120px; overflow-y: auto;" id="robot-toggle-btns"></div>
             <div class="btn-grid" style="margin-top: 8px;">
                 <button class="btn" onclick="clearObstacles()">Clear Walls</button>
                 <button class="btn" onclick="resetFleet()">Reset Fleet</button>
@@ -197,12 +212,12 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             </div>
         </div>
 
-        <div class="card" style="flex: 1;">
+        <div class="card" style="flex: 1; max-height: 180px; overflow-y: auto;">
             <div class="card-header">Active Fleet (<span id="robot-count">0</span>)</div>
             <div id="robot-list"></div>
         </div>
 
-        <div class="card" style="max-height: 130px; overflow-y: auto;">
+        <div class="card" style="max-height: 110px; overflow-y: auto;">
             <div class="card-header">Task Auction Pool</div>
             <div id="task-list"></div>
         </div>
@@ -229,13 +244,16 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         let taskPickup = null;
         let selectedRobotId = null;
 
-        const colors = ['#38bdf8', '#fbbf24', '#34d399', '#f472b6', '#a78bfa', '#fb923c'];
+        const colors = [
+            '#38bdf8', '#fbbf24', '#34d399', '#f472b6', '#a78bfa',
+            '#fb923c', '#e879f9', '#2dd4bf', '#f87171', '#818cf8'
+        ];
 
         function setTool(tool) {
             activeTool = tool;
             taskPickup = null;
             selectedRobotId = null;
-            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tool-bar .tool-btn').forEach(b => b.classList.remove('active'));
             document.getElementById(`tool-${tool}`).classList.add('active');
 
             const hints = {
@@ -246,8 +264,15 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             document.getElementById('tool-hint').innerText = hints[tool];
         }
 
-        function isShelfWall(x, y) {
-            return (y % 3 === 2) && (x >= 2 && x <= 4 || x >= 8 && x <= 10 || x >= 12 && x <= 13);
+        function setFleetScale(n) {
+            document.querySelectorAll('#sidebar [id^="scale-"]').forEach(b => b.classList.remove('active'));
+            const btn = document.getElementById(`scale-${n}`);
+            if (btn) btn.classList.add('active');
+            fetch('/api/fleet-size', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ size: n })
+            });
         }
 
         const ws = new WebSocket(`ws://${location.host}/ws`);
@@ -260,7 +285,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Draw Warehouse Zones (Subtle slate tints)
+            // Draw Warehouse Zones
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     if (x < width / 3) {
@@ -296,7 +321,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 ctx.strokeRect(w.x * cellSize + 1, w.y * cellSize + 1, cellSize - 2, cellSize - 2);
             }
 
-            // Draw Dynamic Injected Obstacles (Bright Alert Red with Outline)
+            // Draw Dynamic Injected Obstacles
             ctx.fillStyle = '#ef4444';
             ctx.strokeStyle = '#fca5a5';
             ctx.lineWidth = 1.5;
@@ -583,6 +608,15 @@ async fn scenario_handler(
     Json("Scenario queued")
 }
 
+async fn fleet_size_handler(
+    State(state): State<AppState>,
+    Json(req): Json<FleetSizeReq>,
+) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::SetFleetSize(req.size));
+    Json("Fleet size set")
+}
+
 async fn clear_obstacles_handler(State(state): State<AppState>) -> Json<&'static str> {
     let mut q = state.control_queue.lock().unwrap();
     q.push(ControlCommand::ClearObstacles);
@@ -643,6 +677,7 @@ pub async fn start_dashboard_server(
         .route("/api/custom-task", post(custom_task_handler))
         .route("/api/manual-dispatch", post(manual_dispatch_handler))
         .route("/api/scenario", post(scenario_handler))
+        .route("/api/fleet-size", post(fleet_size_handler))
         .route("/api/clear-obstacles", post(clear_obstacles_handler))
         .route("/api/kill", post(kill_handler))
         .route("/api/revive", post(revive_handler))

@@ -239,7 +239,30 @@ async fn main() {
                             runner.revive_robot(id);
                         }
                         ControlCommand::ResetSim => {
-                            runner = SimRunner::new(make_config());
+                            runner.reinitialize(make_config());
+                            total_collisions = 0;
+                        }
+                        ControlCommand::SetFleetSize(new_size) => {
+                            let mut new_starts = Vec::new();
+                            for y in 0..height {
+                                for x in 0..width {
+                                    let p = Pos::new(x, y);
+                                    if grid.is_walkable(p) && new_starts.len() < new_size && !pickups.contains(&p) {
+                                        new_starts.push(p);
+                                    }
+                                }
+                            }
+                            runner.reinitialize(SimConfig {
+                                num_robots: new_size,
+                                grid_width: width,
+                                grid_height: height,
+                                aisle_spacing,
+                                tasks: task_list.clone(),
+                                max_ticks: 1_000_000,
+                                kill_robot_at: None,
+                                block_cell_at: None,
+                                start_positions: new_starts,
+                            });
                             total_collisions = 0;
                         }
                         ControlCommand::SpawnTask => {
@@ -258,7 +281,7 @@ async fn main() {
                             match sc_id {
                                 1 => {
                                     // Head-On Bottleneck
-                                    runner = SimRunner::new(SimConfig {
+                                    runner.reinitialize(SimConfig {
                                         num_robots: 2,
                                         grid_width: 15,
                                         grid_height: 15,
@@ -272,7 +295,7 @@ async fn main() {
                                 }
                                 2 => {
                                     // 4-Way Gridlock
-                                    runner = SimRunner::new(SimConfig {
+                                    runner.reinitialize(SimConfig {
                                         num_robots: 4,
                                         grid_width: 15,
                                         grid_height: 15,
@@ -291,7 +314,7 @@ async fn main() {
                                 }
                                 3 => {
                                     // Multi-task Rush
-                                    runner = SimRunner::new(make_config());
+                                    runner.reinitialize(make_config());
                                     for i in 0..8 {
                                         let p = pickups[i % pickups.len()];
                                         let d = dropoffs[(i * 3 + 1) % dropoffs.len()];

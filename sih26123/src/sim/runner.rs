@@ -173,6 +173,72 @@ impl SimRunner {
         }
     }
 
+    /// Reconfigures and resets fleet with new parameters preserving shared Arcs.
+    pub fn reinitialize(&mut self, config: SimConfig) {
+        let mut gt = self.environment.ground_truth.write().unwrap();
+        *gt = (*self.grid).clone();
+        drop(gt);
+
+        self.config = config.clone();
+        self.current_tick = 0;
+        self.next_task_id = (config.tasks.len() + 1) as TaskId;
+
+        let mut robots = Vec::new();
+        let mut nodes = Vec::new();
+
+        for i in 0..config.num_robots {
+            let robot_id = (i + 1) as RobotId;
+            let start_pos = if i < config.start_positions.len() {
+                config.start_positions[i]
+            } else {
+                Pos::new(i * 2, 0)
+            };
+
+            let node = Arc::new(self.bus.register_node(robot_id));
+            nodes.push(node.clone());
+
+            let mut actor = RobotActor::new(
+                robot_id,
+                start_pos,
+                self.grid.clone(),
+                node,
+                self.environment.clone(),
+            );
+
+            for (idx, &(pickup, dropoff)) in config.tasks.iter().enumerate() {
+                let task_id = (idx + 1) as TaskId;
+                actor.known_tasks.insert(
+                    task_id,
+                    TaskStatusMsg {
+                        task_id,
+                        pickup,
+                        dropoff,
+                        assigned_to: None,
+                        status: TaskState::Open,
+                    },
+                );
+            }
+
+            robots.push(actor);
+        }
+
+        for i in 0..robots.len() {
+            let other_poses: Vec<(RobotId, Pos)> = robots
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, r)| (r.id, r.pos))
+                .collect();
+
+            for (other_id, other_pos) in other_poses {
+                robots[i].peer_poses.insert(other_id, (other_pos, 0));
+            }
+        }
+
+        self.nodes = nodes;
+        self.robots = robots;
+    }
+
     /// Dynamically injects a new pickup/dropoff task into the live auction pool.
     pub fn inject_task(&mut self, pickup: Pos, dropoff: Pos) -> TaskId {
         let task_id = self.next_task_id;
