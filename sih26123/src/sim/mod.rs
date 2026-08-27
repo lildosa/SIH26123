@@ -1,1 +1,3 @@
-// Simulation runner and scenarios module placeholder
+pub mod runner;
+
+pub use runner::{SimConfig, SimEnvironment, SimResult, SimRunner};

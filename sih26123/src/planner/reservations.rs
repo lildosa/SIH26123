@@ -67,8 +67,6 @@ impl ReservationTable {
         &self.own_path
     }
 
-    /// Stores or replaces the IntentRecord for `sender_id` only if `intent.intent_seq > current_seq`.
-    /// Returns true if applied, false if rejected as stale or duplicate.
     pub fn apply_peer_intent(&mut self, sender_id: RobotId, intent: &IntentMsg) -> bool {
         if let Some(existing) = self.peer_intents.get(&sender_id) {
             if intent.intent_seq <= existing.intent_seq {
@@ -99,8 +97,6 @@ impl ReservationTable {
         self.peer_intents.values()
     }
 
-    /// Scans every IntentRecord in peer_intents and checks against candidate_path.
-    /// Detects both vertex conflicts and edge swaps without flattening.
     pub fn conflicts_with_peers(&self, candidate_path: &[(Pos, Tick)]) -> Vec<PeerConflict> {
         let mut conflicts = Vec::new();
         if candidate_path.is_empty() {
@@ -108,7 +104,7 @@ impl ReservationTable {
         }
 
         for peer in self.peer_intents.values() {
-            // 1. Check Vertex conflicts
+            // 1. Vertex conflicts
             for (c_pos, c_tick) in candidate_path {
                 for (p_pos, p_tick) in &peer.path {
                     if c_pos == p_pos && c_tick == p_tick {
@@ -124,15 +120,12 @@ impl ReservationTable {
                 }
             }
 
-            // 2. Check Edge-Swap conflicts (head-on swaps)
-            // Candidate moves from cand_path[i] to cand_path[i+1] at tick t -> t+1
-            // Peer moves from peer_path[j] to peer_path[j+1] at tick t -> t+1
-            // Swap occurs if cand[i].pos == peer[j+1].pos && cand[i+1].pos == peer[j].pos
+            // 2. Edge-Swap conflicts
             for c_window in candidate_path.windows(2) {
                 let (c_from, c_t_from) = c_window[0];
                 let (c_to, c_t_to) = c_window[1];
                 if c_t_to != c_t_from + 1 || c_from == c_to {
-                    continue; // Not a move or not consecutive tick
+                    continue;
                 }
 
                 for p_window in peer.path.windows(2) {
@@ -159,26 +152,65 @@ impl ReservationTable {
         conflicts
     }
 
-    /// Constructs explicit SpaceTimeConstraints from all peer intents.
     pub fn build_constraints(&self) -> SpaceTimeConstraints {
         let mut constraints = SpaceTimeConstraints::default();
 
         for peer in self.peer_intents.values() {
-            // Forbid all cells occupied by peer
             for &(p_pos, p_tick) in &peer.path {
                 constraints.forbidden_cells.insert((p_pos, p_tick));
             }
 
-            // Forbid reverse edge transitions
             for p_window in peer.path.windows(2) {
                 let (p_from, p_t_from) = p_window[0];
                 let (p_to, p_t_to) = p_window[1];
                 if p_t_to == p_t_from + 1 && p_from != p_to {
-                    // Peer moves p_from -> p_to at p_t_from.
-                    // Therefore, moving p_to -> p_from at p_t_from is forbidden for us.
                     constraints
                         .forbidden_edges
                         .insert((p_to, p_from, p_t_from));
+                }
+            }
+        }
+
+        constraints
+    }
+
+    pub fn build_constraints_with_stationary(
+        &self,
+        peer_poses: &HashMap<RobotId, (Pos, Tick)>,
+        current_tick: Tick,
+        horizon: Tick,
+    ) -> SpaceTimeConstraints {
+        let mut constraints = self.build_constraints();
+
+        for (&peer_id, &(peer_pos, _)) in peer_poses {
+            if peer_id == self.own_id {
+                continue;
+            }
+
+            // If peer has no announced future steps, it is currently sitting at peer_pos
+            let future_path_steps: Vec<(Pos, Tick)> = self
+                .peer_intents
+                .get(&peer_id)
+                .map(|rec| {
+                    rec.path
+                        .iter()
+                        .filter(|(_, t)| *t >= current_tick)
+                        .copied()
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if future_path_steps.is_empty() {
+                for t in current_tick..=(current_tick + horizon) {
+                    constraints.forbidden_cells.insert((peer_pos, t));
+                }
+            } else {
+                // If peer has a future path, where does it end?
+                // After reaching its path endpoint, it sits at that endpoint for the remaining horizon!
+                if let Some(&(end_pos, end_tick)) = future_path_steps.last() {
+                    for t in (end_tick + 1)..=(current_tick + horizon) {
+                        constraints.forbidden_cells.insert((end_pos, t));
+                    }
                 }
             }
         }
