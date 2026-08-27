@@ -1,0 +1,12 @@
+services:
+  sih26123-amr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sih26123-amr-fleet
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+    command: ["dashboard", "--port", "3000", "--robots", "4", "--tasks", "8"]
