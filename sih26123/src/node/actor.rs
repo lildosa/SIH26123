@@ -40,6 +40,7 @@ pub struct RobotActor {
     pub local_reservations: ReservationTable,
     pub local_wfg: WaitForGraph,
     pub local_obstacles: HashSet<Pos>,
+    pub plan_fail_count: usize,
 
     pub peer_poses: HashMap<RobotId, (Pos, Tick)>,
     pub last_heartbeats: HashMap<RobotId, Tick>,
@@ -97,6 +98,7 @@ impl RobotActor {
             local_reservations: ReservationTable::new(id),
             local_wfg: WaitForGraph::new(),
             local_obstacles: HashSet::new(),
+            plan_fail_count: 0,
 
             peer_poses: HashMap::new(),
             last_heartbeats: HashMap::new(),
@@ -138,6 +140,7 @@ impl RobotActor {
             return;
         }
 
+        self.local_obstacles.retain(|obs| self.environment.is_blocked(*obs));
         let sensed = self.environment.sense_obstacles(self.pos, 3);
         let mut path_blocked = false;
 
@@ -480,7 +483,22 @@ impl RobotActor {
                     if must_yield {
                         self.state = RobotState::Replanning { task_id, pickup, dropoff };
                     } else {
+                        self.plan_fail_count = 0;
                         self.state = RobotState::Moving { path, step_index: 0 };
+                    }
+                } else {
+                    self.plan_fail_count += 1;
+                    if self.plan_fail_count >= 6 {
+                        if let Some(task) = self.known_tasks.get_mut(&task_id) {
+                            task.status = TaskState::Open;
+                            task.assigned_to = None;
+                        }
+                        if let Some(task) = self.known_tasks.get(&task_id).cloned() {
+                            self.send(FleetMessage::TaskStatus(task));
+                        }
+                        self.assigned_task = None;
+                        self.state = RobotState::Idle;
+                        self.plan_fail_count = 0;
                     }
                 }
             }
