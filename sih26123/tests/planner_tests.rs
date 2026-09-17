@@ -31,6 +31,7 @@ fn test_two_robots_no_collision() {
             intent_seq: 1,
             path: path1.clone(),
             priority: 1,
+            lamport_ts: 0,
         },
     );
     let constraints2 = table2.build_constraints();
@@ -75,6 +76,7 @@ fn test_robot_waits_at_bottleneck() {
             intent_seq: 1,
             path: path1.clone(),
             priority: 1,
+            lamport_ts: 0,
         },
     );
     let constraints2 = table2.build_constraints();
@@ -131,6 +133,7 @@ fn test_no_head_on_swap() {
             intent_seq: 1,
             path: path1.clone(),
             priority: 1,
+            lamport_ts: 0,
         },
     );
     let constraints2 = table2.build_constraints();
@@ -188,11 +191,13 @@ fn test_stale_peer_intent_rejected() {
         intent_seq: 5,
         path: vec![(Pos::new(1, 1), 1)],
         priority: 2,
+        lamport_ts: 0,
     };
     let intent_v3 = IntentMsg {
         intent_seq: 3,
         path: vec![(Pos::new(2, 2), 1)],
         priority: 2,
+        lamport_ts: 0,
     };
 
     assert!(table.apply_peer_intent(2, &intent_v5));
@@ -214,6 +219,7 @@ fn test_conflicting_peer_intents_preserved() {
             intent_seq: 1,
             path: vec![(Pos::new(5, 0), 5)],
             priority: 2,
+            lamport_ts: 0,
         },
     );
 
@@ -224,6 +230,7 @@ fn test_conflicting_peer_intents_preserved() {
             intent_seq: 1,
             path: vec![(Pos::new(5, 0), 5)],
             priority: 3,
+            lamport_ts: 0,
         },
     );
 
@@ -248,6 +255,7 @@ fn test_edge_swap_conflict_detected() {
             intent_seq: 1,
             path: vec![(Pos::new(1, 0), 0), (Pos::new(0, 0), 1)],
             priority: 2,
+            lamport_ts: 0,
         },
     );
 
@@ -269,6 +277,7 @@ fn test_constraints_preserve_multi_owner() {
             intent_seq: 1,
             path: vec![(Pos::new(2, 2), 2)],
             priority: 2,
+            lamport_ts: 0,
         },
     );
     table.apply_peer_intent(
@@ -277,6 +286,7 @@ fn test_constraints_preserve_multi_owner() {
             intent_seq: 1,
             path: vec![(Pos::new(3, 3), 3)],
             priority: 3,
+            lamport_ts: 0,
         },
     );
 

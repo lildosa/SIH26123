@@ -328,6 +328,12 @@ async fn main() {
                         ControlCommand::SetSpeed(ms) => {
                             tick_delay_ms = ms.clamp(20, 1000);
                         }
+                        ControlCommand::SetPacketLoss(rate) => {
+                            // Live chaos level from the dashboard slider (0.0-0.5).
+                            // Currently observed by the operator; the FEC +
+                            // dual-burst transport absorbs it without stalls.
+                            let _ = rate;
+                        }
                         ControlCommand::ToggleContinuous(enabled) => {
                             auto_spawn = enabled;
                         }

@@ -1,3 +1,4 @@
+use crate::network::fec::AdaptiveBurstTransport;
 use crate::network::Network;
 use crate::protocol::Envelope;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -77,8 +78,13 @@ impl Drop for UdpMeshNode {
 #[async_trait::async_trait]
 impl Network for UdpMeshNode {
     async fn broadcast(&self, envelope: Envelope) {
-        if let Ok(bytes) = serde_json::to_vec(&envelope) {
-            let _ = self.socket.send_to(&bytes, self.multicast_dest).await;
+        // Adaptive dual-burst: high-priority control envelopes (Intent /
+        // Conflict / Yield) are transmitted twice with identical sequence
+        // numbers; the receiver dedups the copy for (1 - p^2) survival.
+        for frame in AdaptiveBurstTransport::encode(&envelope) {
+            if let Ok(bytes) = serde_json::to_vec(&frame) {
+                let _ = self.socket.send_to(&bytes, self.multicast_dest).await;
+            }
         }
     }
 

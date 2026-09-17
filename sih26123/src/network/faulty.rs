@@ -1,6 +1,7 @@
 use crate::network::Network;
-use crate::protocol::Envelope;
+use crate::protocol::{Envelope, RobotId};
 use rand::Rng;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -10,6 +11,9 @@ pub struct FaultyNetwork<N: Network> {
     pub delay_range_ms: (u64, u64),  // (min, max) delay
     pub duplicate_rate: f64,         // 0.0 to 1.0
     pub reorder_buffer: Mutex<Vec<Envelope>>,
+    /// Split-brain partition simulation: envelopes FROM these senders are
+    /// dropped on receive. Empty = fully healed mesh.
+    pub blocked_senders: Mutex<HashSet<RobotId>>,
 }
 
 impl<N: Network> FaultyNetwork<N> {
@@ -26,7 +30,22 @@ impl<N: Network> FaultyNetwork<N> {
             delay_range_ms,
             duplicate_rate,
             reorder_buffer: Mutex::new(Vec::new()),
+            blocked_senders: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Isolate this node from `senders`: their envelopes are dropped on receive.
+    pub fn set_partition(&self, blocked: HashSet<RobotId>) {
+        *self.blocked_senders.lock().unwrap() = blocked;
+    }
+
+    /// Heal the partition: receive from all senders again.
+    pub fn heal_partition(&self) {
+        self.blocked_senders.lock().unwrap().clear();
+    }
+
+    fn is_blocked(&self, sender: RobotId) -> bool {
+        self.blocked_senders.lock().unwrap().contains(&sender)
     }
 }
 
@@ -71,10 +90,20 @@ impl<N: Network> Network for FaultyNetwork<N> {
     }
 
     async fn recv(&self) -> Option<Envelope> {
-        self.inner.recv().await
+        // Skip partitioned senders so split-brain halves evolve independently.
+        loop {
+            let next = self.inner.recv().await?;
+            if !self.is_blocked(next.sender_id) {
+                return Some(next);
+            }
+        }
     }
 
     async fn drain(&self) -> Vec<Envelope> {
-        self.inner.drain().await
+        let all = self.inner.drain().await;
+        let blocked = self.blocked_senders.lock().unwrap();
+        all.into_iter()
+            .filter(|e| !blocked.contains(&e.sender_id))
+            .collect()
     }
 }
