@@ -1,5 +1,5 @@
 use crate::auction::{compute_bid_cost, Auction, AuctionConfig};
-use crate::negotiator::{resolve_deadlocks, should_yield, WaitForGraph};
+use crate::negotiator::{resolve_deadlocks, should_yield_lamport, WaitForGraph};
 use crate::network::Network;
 use crate::node::environment::Environment;
 use crate::node::state::RobotState;
@@ -25,6 +25,11 @@ pub struct RobotTelemetry {
     pub task: Option<TaskId>,
 }
 
+/// Default priority tier for regular (non-emergency) intents.
+/// All robots share this tier so Lamport timestamps break ties fairly (FCFS),
+/// with RobotId as the final deterministic fallback.
+pub const REGULAR_INTENT_PRIORITY: u64 = 1;
+
 pub struct RobotActor {
     pub id: RobotId,
     pub pos: Pos,
@@ -34,6 +39,8 @@ pub struct RobotActor {
     pub next_seq: SeqNum,
     pub current_intent_seq: SeqNum,
     pub current_intent_priority: u64,
+    pub current_intent_lamport: u64,
+    pub lamport_clock: u64,
 
     pub last_seq_seen: HashMap<RobotId, SeqNum>,
 
@@ -91,7 +98,9 @@ impl RobotActor {
 
             next_seq: 1,
             current_intent_seq: 0,
-            current_intent_priority: id as u64,
+            current_intent_priority: REGULAR_INTENT_PRIORITY,
+            current_intent_lamport: 0,
+            lamport_clock: 0,
 
             last_seq_seen: HashMap::new(),
 
@@ -125,9 +134,11 @@ impl RobotActor {
 
     /// Enqueues an outgoing envelope with an auto-incremented monotonic sequence number.
     pub fn send(&mut self, payload: FleetMessage) {
+        self.lamport_clock += 1;
         let env = Envelope {
             sender_id: self.id,
             seq: self.next_seq,
+            lamport_ts: self.lamport_clock,
             payload,
         };
         self.next_seq += 1;
@@ -184,6 +195,8 @@ impl RobotActor {
             }
             self.last_seq_seen.insert(env.sender_id, env.seq);
 
+            self.lamport_clock = self.lamport_clock.max(env.lamport_ts) + 1;
+
             match env.payload {
                 FleetMessage::Pose(m) => {
                     self.peer_poses.insert(env.sender_id, (m.pos, m.tick));
@@ -212,12 +225,32 @@ impl RobotActor {
                 }
                 FleetMessage::Conflict(m) => {
                     if m.challenged_id == self.id && m.challenged_intent_seq == self.current_intent_seq {
-                        if should_yield(
-                            self.id,
-                            self.current_intent_priority,
-                            env.sender_id,
-                            m.challenger_priority,
-                        ) {
+                        // Resolve challenger intent age authoritatively: prefer the stored
+                        // peer intent record when versions match; fall back to the
+                        // transmitted challenger_lamport; yield conservatively for
+                        // unknown/legacy (lamport 0) challengers.
+                        let known = self.local_reservations.get_peer_intent(env.sender_id);
+                        let version_matches = known
+                            .map(|r| r.intent_seq == m.challenger_intent_seq)
+                            .unwrap_or(false);
+                        let challenger_lamport = if version_matches {
+                            known.map(|r| r.lamport_ts).unwrap_or(m.challenger_lamport)
+                        } else {
+                            m.challenger_lamport
+                        };
+                        let must_yield = if !version_matches && challenger_lamport == 0 {
+                            true
+                        } else {
+                            should_yield_lamport(
+                                self.id,
+                                self.current_intent_priority,
+                                self.current_intent_lamport,
+                                env.sender_id,
+                                m.challenger_priority,
+                                challenger_lamport,
+                            )
+                        };
+                        if must_yield {
                             self.send(FleetMessage::Yield(YieldMsg {
                                 yielded_intent_seq: self.current_intent_seq,
                                 to_robot: env.sender_id,
@@ -449,13 +482,15 @@ impl RobotActor {
                     200,
                 ) {
                     self.current_intent_seq = self.next_seq;
-                    self.current_intent_priority = self.id as u64;
+                    self.current_intent_priority = REGULAR_INTENT_PRIORITY;
+                    self.current_intent_lamport = self.lamport_clock + 1;
                     self.local_reservations.reserve_own_path(&path);
 
                     self.send(FleetMessage::Intent(IntentMsg {
                         intent_seq: self.current_intent_seq,
                         path: path.clone(),
                         priority: self.current_intent_priority,
+                        lamport_ts: self.current_intent_lamport,
                     }));
 
                     if let Some(task) = self.known_tasks.get_mut(&task_id) {
@@ -468,7 +503,7 @@ impl RobotActor {
                     let conflicts = self.local_reservations.conflicts_with_peers(&path);
                     let mut must_yield = false;
                     for c in conflicts {
-                        if should_yield(self.id, self.current_intent_priority, c.peer_id, c.peer_priority) {
+                        if should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, c.peer_id, c.peer_priority, c.peer_lamport) {
                             must_yield = true;
                             self.send(FleetMessage::Yield(YieldMsg {
                                 yielded_intent_seq: self.current_intent_seq,
@@ -567,11 +602,11 @@ impl RobotActor {
 
                             // If peer is moving into next_pos at next tick
                             if let Some(p_next) = peer_next_step {
-                                if p_next == next_pos && should_yield(self.id, self.current_intent_priority, peer.robot_id, peer.priority) {
+                                if p_next == next_pos && should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, peer.robot_id, peer.priority, peer.lamport_ts) {
                                     must_yield_next_step = true;
                                     break;
                                 }
-                                if p_next == self.pos && peer_curr_pos == next_pos && should_yield(self.id, self.current_intent_priority, peer.robot_id, peer.priority) {
+                                if p_next == self.pos && peer_curr_pos == next_pos && should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, peer.robot_id, peer.priority, peer.lamport_ts) {
                                     must_yield_next_step = true;
                                     break;
                                 }
@@ -593,7 +628,7 @@ impl RobotActor {
                             let conflicts = self.local_reservations.conflicts_with_peers(&remaining);
                             if !conflicts.is_empty() {
                                 let c = &conflicts[0];
-                                if should_yield(self.id, self.current_intent_priority, c.peer_id, c.peer_priority) {
+                                if should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, c.peer_id, c.peer_priority, c.peer_lamport) {
                                     self.local_wfg.add_wait(self.id, c.peer_id);
                                     let deadlocks = resolve_deadlocks(&self.local_wfg);
                                     if deadlocks.contains(&self.id) {
@@ -606,6 +641,7 @@ impl RobotActor {
                                     self.send(FleetMessage::Conflict(ConflictMsg {
                                         challenger_intent_seq: self.current_intent_seq,
                                         challenger_priority: self.current_intent_priority,
+                                        challenger_lamport: self.current_intent_lamport,
                                         challenged_id: c.peer_id,
                                         challenged_intent_seq: c.peer_intent_seq,
                                         conflicting_cell: c.cell,
@@ -657,6 +693,7 @@ impl RobotActor {
             tick: self.current_tick,
             battery: self.battery,
             status,
+            orientation: None,
         }));
 
         // 2g. Battery consumption
@@ -670,7 +707,7 @@ impl RobotActor {
     }
 
     fn handle_detected_conflict(&mut self, conflict: &crate::planner::PeerConflict) {
-        if should_yield(self.id, self.current_intent_priority, conflict.peer_id, conflict.peer_priority) {
+        if should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, conflict.peer_id, conflict.peer_priority, conflict.peer_lamport) {
             self.send(FleetMessage::Yield(YieldMsg {
                 yielded_intent_seq: self.current_intent_seq,
                 to_robot: conflict.peer_id,
@@ -684,6 +721,7 @@ impl RobotActor {
             self.send(FleetMessage::Conflict(ConflictMsg {
                 challenger_intent_seq: self.current_intent_seq,
                 challenger_priority: self.current_intent_priority,
+                challenger_lamport: self.current_intent_lamport,
                 challenged_id: conflict.peer_id,
                 challenged_intent_seq: conflict.peer_intent_seq,
                 conflicting_cell: conflict.cell,

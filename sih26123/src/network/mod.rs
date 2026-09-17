@@ -1,8 +1,10 @@
 pub mod faulty;
+pub mod fec;
 pub mod in_memory;
 pub mod udp_mesh;
 
 pub use faulty::FaultyNetwork;
+pub use fec::{AdaptiveBurstTransport, FecDecoder, BURST_REPLICATION};
 pub use in_memory::{InMemoryBus, InMemoryNode};
 pub use udp_mesh::{UdpMeshConfig, UdpMeshNode};
 
