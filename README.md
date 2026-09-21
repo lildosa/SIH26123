@@ -51,8 +51,10 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 +-----------------------------------------------------------------------------------+
 ```
 
-### 2.1 Space-Time A* Pathfinding (3D Reservation Grid)
-- Path trajectories are planned in 3-dimensional space-time $(x, y, t)$.
+### 2.1 Discrete Space-Time Reservation Grid with Heading Change Latency
+- Path trajectories are planned in 3-dimensional space-time $(x, y, t)$ across discrete warehouse cells.
+- **Turn-Delay Cost Matrix:** Rotational latency is explicitly modeled as a discrete cost penalty rather than unphysical continuous curves: a 90° heading rotation costs a 1-tick delay, while a 180° turnaround costs 2 ticks.
+- **Stationary Reservation Locks:** While changing heading, the AMR locks its current cell in space-time across the turn duration, preventing incoming peers from encroaching and mathematically eliminating turning collisions.
 - Enforces strict vertex non-occupancy constraints (preventing two robots on the same cell at tick $t$) and directional edge-swap constraints (preventing robots from crossing adjacent cells in opposite directions $(u, v) \leftrightarrow (v, u)$).
 - When a robot's path is blocked, it negotiates or waits in-place using temporal wait moves before re-routing.
 
@@ -70,6 +72,11 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 ### 2.4 ISO 3691-4 Fail-Safe Sensing & Dead Chassis Handling
 - Each robot continuously senses obstacles within a 3-cell radius.
 - If a peer AMR breaks down or loses battery, its chassis remains stationary. Surviving peers detect missed heartbeats (5-tick timeout), treat the dead robot chassis as a permanent static obstacle in local maps, re-auction any incomplete tasks, and route around the broken chassis with zero collisions.
+
+### 2.5 Causal Lamport Logical Clocks & Forward Error Correction (FEC)
+- **Lamport Logical Clocks:** Every P2P broadcast embeds a monotonically increasing Lamport timestamp ($L$). Receivers update $L_{\text{local}} = \max(L_{\text{local}}, L_{\text{msg}}) + 1$. Deterministic arbitration orders concurrent claims by: (1) higher priority, (2) older Lamport timestamp, and (3) lower Robot ID.
+- **UDP Sequence Deduplication:** Monotonic sequence numbers tracked per peer ($O(1)$ filter) immediately reject stale, out-of-order, or duplicated network packets.
+- **Reed-Solomon & Adaptive Dual-Burst FEC:** High-priority control frames (`Intent`, `Conflict`, `Yield`) use dual-burst transmission ($N=2$), ensuring survival probability $(1 - p^2)$ at drop rate $p$ (e.g. 96% delivery at 20% loss) with zero buffering latency. Bulk state transfers utilize systematic XOR / Reed-Solomon parity blocks.
 
 ---
 
@@ -90,12 +97,15 @@ The system includes a comparative benchmarking pipeline evaluating the decentral
 +------------------------------------------------------------------------------------+
 ```
 
-All 49 automated integration tests across 11 test suites pass with 100% reliability:
+All 60 automated integration tests across 14 test suites pass with 100% reliability:
 - `auction_tests` (6 tests): Idle bidding, congestion scaling, tie-breaking, deadline urgency.
 - `baseline_tests` (2 tests): Centralized CBS pathfinder and FIFO dispatcher validation.
+- `chaos_tests` (3 tests): Dual-burst FEC recovery, network partition split-brain, dead robot re-auction.
 - `deadlock_tests` (9 tests): Simple cycle, 3-robot cycle, multiple independent cycles, priority yielding.
 - `dedup_and_staleness_tests` (6 tests): Monotonic sequence ordering, duplicate rejection, stale view resilience.
 - `full_validation` (1 test): Multi-scale speedup validation and zero-collision invariants.
+- `kinematics_tests` (2 tests): 90° turn-delay cost, 180° aisle turnaround, stationary reservation locks.
+- `lamport_tests` (14 tests): Causal ordering, Lamport clock increment/merge, deterministic tie-breaking.
 - `metrics_tests` (2 tests): Telemetry collector aggregation and comparative metrics.
 - `network_fault_tests` (4 tests): 100% packet loss, packet duplication, and staged latency delivery.
 - `network_tests` (4 tests): Tick-scoped delivery and zero self-echo validation.
@@ -149,17 +159,20 @@ cargo run --release --bin sih26123 -- sim --robots 8 --width 20 --height 20 --ta
 
 ## 5. Web Operations Console Features
 
-The passive web console (`http://localhost:3000`) provides real-time observational telemetry and interactive fleet controls built with Axum, WebSockets, and HTML5 Canvas:
+The passive web console (`http://localhost:3000`) provides real-time observational telemetry and interactive fleet controls built with Axum, WebSockets, Three.js WebGL, and HTML5 Canvas:
 
+- **Three.js WebGL 3D Digital Twin:** Real-time 3D rendered warehouse digital twin with industrial lighting, extruded metal shelving units, rotating LiDAR pucks, differential drive wheel animation, floating battery SoC % badges, and glowing 3D Space-Time trajectory ribbons. Supports intuitive mouse orbit controls (click-drag to orbit, wheel to zoom) and fallback to 2D isometric canvas.
+- **Interactive Blocked Aisle Toggle (`🚨 Block Aisle`):** One-click button that dynamically injects obstacle blocks across primary warehouse corridors, forcing active AMRs to sense obstructions in real time and compute zero-collision reroutes.
 - **Fleet Scale Selector:** Dynamically scale the fleet between 2, 4, 6, 8, and 10 AMRs in real-time with automatic path assignment and unique robot coloring.
-- **Interactive Wall Tool:** Click any warehouse cell to inject or remove dynamic obstacles and observe instantaneous peer rerouting.
+- **Interactive Wall Tool:** Click any warehouse cell in 2D or 3D to inject or remove dynamic obstacles and observe instantaneous peer rerouting.
 - **Custom Task Dispatcher:** Click two coordinates on the grid (Pickup $\to$ Dropoff) to inject a custom order into the live P2P auction pool.
 - **Direct AMR Move Tool:** Select any AMR and click a destination cell to issue direct waypoint overrides.
 - **Preset Test Scenarios:**
   1. *Head-On Bottleneck:* 2 AMRs crossing a 1-lane corridor.
   2. *4-Way Gridlock:* 4 AMRs crossing a 4-way intersection simultaneously.
   3. *Fleet Rush:* 8 concurrent orders distributed across the warehouse.
-- **Node Kill / Restore Controls:** Toggle individual AMR failures (`Kill R1` / `Restore R1`) to demonstrate live fault tolerance and task re-allocation.
+  4. *Blocked Aisle Corridor:* 4 AMRs in high-density corridors executing dynamic rerouting around a central obstruction.
+- **Chaos Bench & Fault Injection:** Live packet loss slider (0% to 50%) demonstrating dual-burst ($N=2$) and XOR parity resilience, plus individual AMR kill/restore buttons.
 - **Speed Controller:** Live tick rate slider (20ms to 400ms per tick).
 
 ---
@@ -170,10 +183,19 @@ The architecture supports mixed-reality Hardware-in-the-Loop (HIL) operation whe
 
 - **Raspberry Pi 4B/5:** Runs the `sih26123` Rust binary, acts as AMR-1, and communicates with virtual peers over UDP Multicast (`239.0.26.123:26123`).
 - **Arduino Uno:** Connected to the Pi via USB Serial (`115200 8N1`), controlling an L298N motor driver, 2x DC motors, an HC-SR04 ultrasonic distance sensor, and status LEDs.
+- **Physical HIL Verification Script (`scripts/hil_serial_mock.py`):** Standalone zero-dependency Python verification mock that simulates 10 Hz ultrasonic telemetry with physical Gaussian sensor jitter ($\sigma = 1.2\text{ cm}$), threshold triggers (`OBS:11.4`), command echo handling, and the 500ms safety watchdog timer.
+  ```bash
+  # Run automated 10-test HIL loopback verification
+  python3 scripts/hil_serial_mock.py --mode test
+
+  # Spawn virtual Linux serial port (/tmp/ttyHIL_AMR) for external terminal connection
+  python3 scripts/hil_serial_mock.py --mode pty
+  ```
 - **Hardware Failsafe Watchdog:** If serial communication between the Pi and Arduino drops for $> 500\text{ ms}$, the microcontroller firmware automatically cuts motor power.
 - **Physical Sensor Overrides:** When an obstacle is detected within 15 cm by the physical ultrasonic sensor, the Arduino sends an immediate `OBS:<dist>` packet, causing the Space-Time planner on the Pi to halt the physical robot and replan around the obstacle.
 
-Detailed hardware wiring pinouts, serial protocol definitions, and complete Arduino C++ firmware are available in [`docs/HARDWARE_INTEGRATION_PLAN.md`](docs/HARDWARE_INTEGRATION_PLAN.md).
+Detailed hardware wiring pinouts, serial protocol definitions, and complete Arduino C++ firmware are available in [`local-docs/HARDWARE_INTEGRATION_PLAN.md`](local-docs/HARDWARE_INTEGRATION_PLAN.md).  
+For the jury pitch script and defense cross-examination answers, see [`local-docs/PITCH_AND_DEFENSE_PLAYBOOK.md`](local-docs/PITCH_AND_DEFENSE_PLAYBOOK.md).
 
 ---
 
@@ -186,12 +208,13 @@ SIH26123/
 +-- docker-compose.yml            # Docker Compose service definition
 +-- Makefile                      # Single-command build and run workflows
 +-- README.md                     # Comprehensive project documentation
-+-- docs/                         # Specifications, plans, and architecture diagrams
++-- local-docs/                   # Specifications, pitch playbooks, and architecture plans
+|   +-- PITCH_AND_DEFENSE_PLAYBOOK.md # 3-minute oral pitch script & 10-question BEL defense sheet
 |   +-- HARDWARE_INTEGRATION_PLAN.md # Exhaustive Raspberry Pi + Arduino Uno HIL plan
 |   +-- IMPLEMENTATION_PLAN.md    # 9-phase software execution specification
 |   +-- SIH_2026_Problem_Statements.pdf # Official BEL Problem Statement
-|   +-- diagrams/                 # Architecture, flowchart, and roadmap diagrams
 +-- scripts/
+|   +-- hil_serial_mock.py        # Hardware-in-the-Loop serial telemetry mock & jitter tester
 |   +-- demo_matplotlib.py        # Standalone Python Matplotlib animated visualizer
 +-- sih26123/                     # Main Rust crate
     +-- Cargo.toml
@@ -199,22 +222,25 @@ SIH26123/
     |   +-- lib.rs                # Library exports
     |   +-- main.rs               # CLI entry point (sim, bench, dashboard)
     |   +-- world/                # GridMap, Pos, Cell representations
-    |   +-- protocol/             # Envelopes, Heartbeats, Intents, Bids, Conflicts
-    |   +-- planner/              # Space-Time A*, Reservation Table, Constraints
+    |   +-- protocol/             # Envelopes, Heartbeats, Intents, Bids, Conflicts, Lamport Clocks
+    |   +-- planner/              # Space-Time A*, Reservation Table, Turn-Delay Cost Matrix
     |   +-- negotiator/           # Wait-For-Graph, Cycle Detection, Priority Arbitration
     |   +-- auction/              # Contract Net Protocol, Multi-Factor Bidding
-    |   +-- network/              # InMemoryBus, FaultyNetwork, UdpMulticastTransport
+    |   +-- network/              # InMemoryBus, FaultyNetwork, UdpMulticastTransport, FEC
     |   +-- node/                 # RobotActor, State Machine, Telemetry, Sensing
     |   +-- sim/                  # 5-Phase Synchronous Simulation Runner
     |   +-- baseline/             # Centralized Conflict-Based Search (CBS) baseline
     |   +-- metrics/              # Metrics Collector & Comparative Benchmark Engine
-    |   +-- dashboard/            # Axum WebSocket server & Industrial Canvas Console
-    +-- tests/                    # 11 integration test suites (49 passing tests)
+    |   +-- dashboard/            # Axum WebSocket server & Three.js WebGL Digital Twin
+    +-- tests/                    # 14 integration test suites (60 passing tests)
         +-- auction_tests.rs
         +-- baseline_tests.rs
+        +-- chaos_tests.rs
         +-- deadlock_tests.rs
         +-- dedup_and_staleness_tests.rs
         +-- full_validation.rs
+        +-- kinematics_tests.rs
+        +-- lamport_tests.rs
         +-- metrics_tests.rs
         +-- network_fault_tests.rs
         +-- network_tests.rs

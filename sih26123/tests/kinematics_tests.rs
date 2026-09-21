@@ -26,7 +26,7 @@ fn test_90_degree_turn_delay() {
         &constraints,
         50,
     )
-    .expect("kinematic plan must exist on open grid");
+    .expect("discrete turn-delay plan must exist on open grid");
 
     // Manhattan distance is 2; with the 1-tick turn the path spans 3 ticks.
     assert!(
@@ -84,7 +84,7 @@ fn test_180_degree_turnaround_in_aisle() {
     assert_eq!(path[2].1, 12);
     assert_eq!(path.last().unwrap().0, Pos::new(3, 4));
 
-    // Corridor still routes without collisions under the same kinematics.
+    // Corridor still routes without collisions under the same turn-delay cost matrix.
     let corridor_path = plan_with_orientation(
         &grid,
         2,
