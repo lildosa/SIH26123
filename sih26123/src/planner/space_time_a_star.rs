@@ -193,13 +193,13 @@ impl PartialOrd for KinematicNode {
     }
 }
 
-/// Differential-drive Space-Time A* over `(Pos, Tick, Orientation)`.
+/// Discrete Space-Time Reservation Grid with Heading Change Latency over `(Pos, Tick, Orientation)`.
 ///
 /// When the required heading differs from the current heading, the planner
-/// injects `rotation_cost` stationary waits at the current cell (in-place
-/// turn) before the move. Those `(u, t+1 ..= t+dt)` entries are part of the
-/// returned path, so `reserve_own_path` locks them as stationary vertex
-/// reservations and peers route around the turning robot.
+/// applies a Turn-Delay Cost Matrix, injecting `rotation_cost` stationary waits
+/// at the current cell (1 tick for 90° turn, 2 ticks for 180° turnaround) before the move.
+/// Those `(u, t+1 ..= t+dt)` entries are part of the returned path, so `reserve_own_path`
+/// locks them as stationary vertex reservations and peers route around the turning robot.
 pub fn plan_with_orientation(
     grid: &GridMap,
     _robot_id: RobotId,
