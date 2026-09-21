@@ -3,3 +3,5 @@ target/
 **/*.rs.bk
 session-*.md
 local-docs/
+__pycache__/
+*.pyc

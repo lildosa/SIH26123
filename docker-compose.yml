@@ -1,9 +1,9 @@
 services:
-  sih26123-amr:
+  thadam-amr:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: sih26123-amr-fleet
+    container_name: thadam-amr-fleet
     ports:
       - "3000:3000"
     restart: unless-stopped

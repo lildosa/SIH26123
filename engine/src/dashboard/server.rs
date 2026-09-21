@@ -115,7 +115,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SIH26123 AMR Fleet Operations Console</title>
+    <title>THADAM — Autonomous Decentralized AMR Mesh Console</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
         body { background: #111215; color: #e4e4e7; display: flex; height: 100vh; overflow: hidden; }
@@ -158,8 +158,8 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <body>
     <div id="sidebar">
         <div>
-            <div style="font-size: 14px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">SIH26123 P2P MESH</div>
-            <div style="font-size: 10px; color: #71717a; letter-spacing: 0.3px;">ISO 3691-4 DISTRIBUTED AMR ORCHESTRATION</div>
+            <div style="font-size: 14px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">THADAM P2P MESH</div>
+            <div style="font-size: 10px; color: #71717a; letter-spacing: 0.3px;">TRAJECTORY-AWARE HEURISTICS FOR AUTONOMOUS DECENTRALIZED AMR MESH</div>
         </div>
 
         <div class="card">

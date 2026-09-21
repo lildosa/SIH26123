@@ -1,7 +1,7 @@
-# SIH26123: Edge-AI Distributed AMR Fleet Coordination Engine
+# THADAM: Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh
 
-> **Smart India Hackathon 2026 Problem Statement**  
-> **Organization:** Bharat Electronics Limited (BEL)  
+> **Distributed Edge-AI AMR Fleet Coordination Engine**  
+> **Origin Context:** Smart India Hackathon (SIH) 2026 Problem Statement — Bharat Electronics Limited (BEL)  
 > **Domain:** Robotics, Edge-AI, Autonomous Mobile Robots (AMRs), Defense & Industrial Logistics  
 > **Language & Toolchain:** Rust 1.85+ / 2024 Edition  
 > **Key Metric:** 100% Zero-Collision Guarantee (ISO 3691-4) and >= 20% Makespan Reduction vs Centralized Baselines  
@@ -16,7 +16,7 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 2. **Network Bandwidth & Latency Saturation:** Centralized servers must ingest raw high-frequency telemetry from every AMR and compute global multi-agent paths, scaling exponentially ($O(N!)$ or $O(V^N)$).
 3. **Stale Real-Time State:** Dynamic obstacles (fallen pallets, humans, broken robots) require round-trip server replanning, causing latency delays and hazardous physical bottlenecks.
 
-**SIH26123** is a fully decentralized, edge-native peer-to-peer (P2P) AMR coordination engine built entirely in Rust. Every robot acts as an autonomous actor running Space-Time A* pathfinding, Contract Net task auctions, and Wait-For-Graph deadlock resolution on local edge compute, communicating directly over asynchronous UDP Multicast mesh networking without requiring any centralized master server.
+**THADAM** (**T**rajectory-aware **H**euristics for **A**utonomous **D**ecentralized **A**MR **M**esh) is a fully decentralized, edge-native peer-to-peer (P2P) AMR coordination engine built entirely in Rust. Every robot acts as an autonomous actor running Space-Time A* pathfinding, Contract Net task auctions, and Wait-For-Graph deadlock resolution on local edge compute, communicating directly over asynchronous UDP Multicast mesh networking without requiring any centralized master server.
 
 ---
 
@@ -146,13 +146,13 @@ Access the web console at `http://localhost:3000`.
 
 ```bash
 # Launch Web Dashboard
-cargo run --release --bin sih26123 -- dashboard --port 3000 --robots 4 --tasks 8
+cd engine && cargo run --release -- dashboard --port 3000 --robots 4 --tasks 8
 
 # Run Benchmarks
-cargo run --release --bin sih26123 -- bench --width 15 --height 15 --tasks 5
+cd engine && cargo run --release -- bench --width 15 --height 15 --tasks 5
 
 # Run Headless Simulation
-cargo run --release --bin sih26123 -- sim --robots 8 --width 20 --height 20 --tasks 15
+cd engine && cargo run --release -- sim --robots 8 --width 20 --height 20 --tasks 15
 ```
 
 ---
@@ -181,7 +181,7 @@ The passive web console (`http://localhost:3000`) provides real-time observation
 
 The architecture supports mixed-reality Hardware-in-the-Loop (HIL) operation where 1 physical robot operates alongside $N$ virtual peer robots:
 
-- **Raspberry Pi 4B/5:** Runs the `sih26123` Rust binary, acts as AMR-1, and communicates with virtual peers over UDP Multicast (`239.0.26.123:26123`).
+- **Raspberry Pi 4B/5:** Runs the coordination engine binary, acts as AMR-1, and communicates with virtual peers over UDP Multicast (`239.0.26.123:26123`).
 - **Arduino Uno:** Connected to the Pi via USB Serial (`115200 8N1`), controlling an L298N motor driver, 2x DC motors, an HC-SR04 ultrasonic distance sensor, and status LEDs.
 - **Physical HIL Verification Script (`scripts/hil_serial_mock.py`):** Standalone zero-dependency Python verification mock that simulates 10 Hz ultrasonic telemetry with physical Gaussian sensor jitter ($\sigma = 1.2\text{ cm}$), threshold triggers (`OBS:11.4`), command echo handling, and the 500ms safety watchdog timer.
   ```bash
@@ -194,8 +194,7 @@ The architecture supports mixed-reality Hardware-in-the-Loop (HIL) operation whe
 - **Hardware Failsafe Watchdog:** If serial communication between the Pi and Arduino drops for $> 500\text{ ms}$, the microcontroller firmware automatically cuts motor power.
 - **Physical Sensor Overrides:** When an obstacle is detected within 15 cm by the physical ultrasonic sensor, the Arduino sends an immediate `OBS:<dist>` packet, causing the Space-Time planner on the Pi to halt the physical robot and replan around the obstacle.
 
-Detailed hardware wiring pinouts, serial protocol definitions, and complete Arduino C++ firmware are available in [`local-docs/HARDWARE_INTEGRATION_PLAN.md`](local-docs/HARDWARE_INTEGRATION_PLAN.md).  
-For the jury pitch script and defense cross-examination answers, see [`local-docs/PITCH_AND_DEFENSE_PLAYBOOK.md`](local-docs/PITCH_AND_DEFENSE_PLAYBOOK.md).
+Detailed hardware wiring pinouts, serial protocol definitions, and architecture specifications are available in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#5-hardware-in-the-loop-hil-integration-architecture).
 
 ---
 
@@ -203,16 +202,13 @@ For the jury pitch script and defense cross-examination answers, see [`local-doc
 
 ```
 SIH26123/
-+-- Cargo.toml                    # Root Cargo workspace manifest
 +-- Dockerfile                    # Multi-stage container build
 +-- docker-compose.yml            # Docker Compose service definition
 +-- Makefile                      # Single-command build and run workflows
 +-- README.md                     # Comprehensive project documentation
-+-- local-docs/                   # Specifications, pitch playbooks, and architecture plans
-|   +-- PITCH_AND_DEFENSE_PLAYBOOK.md # 3-minute oral pitch script & 10-question BEL defense sheet
-|   +-- HARDWARE_INTEGRATION_PLAN.md # Exhaustive Raspberry Pi + Arduino Uno HIL plan
-|   +-- IMPLEMENTATION_PLAN.md    # 9-phase software execution specification
-|   +-- SIH_2026_Problem_Statements.pdf # Official BEL Problem Statement
++-- docs/                         # Architecture specifications and diagrams
+|   +-- ARCHITECTURE.md           # Definitive system architecture & hardware HIL specification
+|   +-- diagrams/                 # Architecture SVG diagrams
 +-- scripts/
 |   +-- hil_serial_mock.py        # Hardware-in-the-Loop serial telemetry mock & jitter tester
 |   +-- demo_matplotlib.py        # Standalone Python Matplotlib animated visualizer

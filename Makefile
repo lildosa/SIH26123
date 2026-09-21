@@ -6,13 +6,13 @@ CARGO_DIR ?= engine
 all: build
 
 help:
-	@echo "SIH26123 AMR Fleet Coordination Engine"
+	@echo "THADAM — Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh"
 	@echo ""
 	@echo "Available commands:"
 	@echo "  make start        - Build and run real-time web dashboard on port 3000"
 	@echo "  make bench        - Run comparative benchmark against Centralized CBS"
 	@echo "  make sim          - Run headless multi-robot simulation (4 robots, 8 tasks)"
-	@echo "  make test         - Execute all 49 automated integration tests"
+	@echo "  make test         - Execute all 60 automated integration tests"
 	@echo "  make build        - Compile release binary in engine/"
 	@echo "  make docker-build - Build containerized Docker image"
 	@echo "  make docker-up    - Run containerized application via Docker Compose"

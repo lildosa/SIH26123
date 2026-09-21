@@ -1,4 +1,4 @@
-# Multi-stage Docker build for SIH26123 AMR Fleet Coordination Engine
+# Multi-stage Docker build for THADAM (Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh)
 FROM rust:1.85-slim-bookworm AS builder
 
 WORKDIR /usr/src/engine

@@ -1,6 +1,6 @@
-# System Architecture Reference: Distributed AMR Fleet Coordination Engine
+# System Architecture Reference: THADAM Distributed AMR Fleet Coordination Engine
 
-This document provides the definitive architectural specification for the **SIH26123 Distributed Autonomous Mobile Robot (AMR) Fleet Coordination Engine**. It covers core principles, module boundaries, inter-robot communication protocols, path planning heuristics, deadlock resolution mechanics, telemetry pipelines, and deployment topology.
+This document provides the definitive architectural specification for the **THADAM Distributed Autonomous Mobile Robot (AMR) Fleet Coordination Engine** (**T**rajectory-aware **H**euristics for **A**utonomous **D**ecentralized **A**MR **M**esh). It covers core principles, module boundaries, inter-robot communication protocols, path planning heuristics, deadlock resolution mechanics, telemetry pipelines, and deployment topology.
 
 ---
 
@@ -12,7 +12,7 @@ Industrial AMR fleets operating in dense warehouse and intralogistics environmen
 2. **Exponential Compute Complexity:** Centralized multi-agent pathfinding algorithms (such as Conflict-Based Search) scale exponentially ($O(2^C)$ where $C$ is the conflict count), causing scheduling stalls under fleet expansion.
 3. **Network Sensitivity:** Centralized schemes demand continuous, low-latency bidirectional Wi-Fi links to transmit fine-grained trajectory waypoints.
 
-To eliminate these constraints, the SIH26123 engine is designed around five foundational architectural principles:
+To eliminate these constraints, the THADAM engine is designed around five foundational architectural principles:
 
 * **Zero Central Authority:** AMRs make routing, scheduling, and conflict arbitration decisions entirely peer-to-peer at the edge. There is no master coordinator node.
 * **Discrete Space-Time Reservations with Heading Change Latency:** Robots plan paths across a 3D discrete space-time grid $(x, y, t)$, explicitly modeling rotational turnaround delays to guarantee physical clearance and prevent corner-clipping collisions.
@@ -294,7 +294,7 @@ The engine bridges seamlessly to physical embedded hardware via the architecture
 ```mermaid
 flowchart LR
     subgraph OnBoard["AMR On-Board Computer (Raspberry Pi / Linux)"]
-        CORE["Rust Coordination Engine<br/>(sih26123 / engine)"]
+        CORE["THADAM Coordination Engine<br/>(Rust / engine)"]
         SERIAL["UART Serial Driver<br/>(/dev/ttyUSB0 @ 115200 8N1)"]
     end
 

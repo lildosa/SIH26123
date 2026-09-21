@@ -3,7 +3,7 @@
 scripts/hil_serial_mock.py - Hardware-in-the-Loop (HIL) Serial Telemetry Mock
 
 Simulates the Arduino Uno microcontroller and HC-SR04 ultrasonic sensor subsystem
-for the SIH26123 AMR Fleet Coordination Engine per docs/HARDWARE_INTEGRATION_PLAN.md.
+for the THADAM AMR Fleet Coordination Engine per docs/ARCHITECTURE.md.
 
 Features:
 - Full 115200 8N1 ASCII command/telemetry protocol compliance.
@@ -161,7 +161,7 @@ class MockArduinoAMR:
 def run_self_test() -> bool:
     """Executes automated verification suite and validates against all acceptance gates."""
     print("=" * 72)
-    print(" SIH26123 HARDWARE-IN-THE-LOOP (HIL) SERIAL TELEMETRY VERIFICATION")
+    print(" THADAM HARDWARE-IN-THE-LOOP (HIL) SERIAL TELEMETRY VERIFICATION")
     print(" Protocol: 115200 8N1 ASCII | Watchdog: 500ms | Obstacle Threshold: <=15.0cm")
     print("=" * 72)
 
@@ -351,7 +351,7 @@ def run_live_bridge(dashboard_url: str = "http://localhost:3000"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SIH26123 HIL Serial Telemetry Mock & Loopback Verification")
+    parser = argparse.ArgumentParser(description="THADAM HIL Serial Telemetry Mock & Loopback Verification")
     parser.add_argument("--mode", choices=["test", "pty", "bridge"], default="test",
                         help="Operating mode: test (automated self-test), pty (virtual serial port), bridge (live dashboard REST bridge)")
     parser.add_argument("--url", default="http://localhost:3000", help="Dashboard URL for bridge mode")
