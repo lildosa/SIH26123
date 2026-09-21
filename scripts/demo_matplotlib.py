@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SIH26123 - Distributed AMR Fleet Coordination Demo (Matplotlib Animated Visualizer)
+THADAM - Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh (Matplotlib Animated Visualizer)
 Connects to the live WebSocket stream or simulates a multi-robot warehouse fleet.
 """
 
@@ -105,7 +105,7 @@ def update(frame_num):
 
     # Title & Stats
     ax.set_title(
-        f"SIH26123 AMR Mesh | Tick: {current_frame['tick']} | Tasks Done: {current_frame.get('completed_count', 0)} | Collisions: {current_frame.get('collisions', 0)}",
+        f"THADAM AMR Mesh | Tick: {current_frame['tick']} | Tasks Done: {current_frame.get('completed_count', 0)} | Collisions: {current_frame.get('collisions', 0)}",
         color='#38bdf8', fontsize=12, fontweight='bold', pad=12
     )
 

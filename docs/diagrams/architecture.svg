@@ -18,7 +18,7 @@
   </defs>
 
   <!-- Title -->
-  <text x="620" y="55" font-size="26" font-weight="bold" fill="#0f172a" text-anchor="middle">SIH26123 — Decentralized AMR Fleet Architecture</text>
+  <text x="620" y="55" font-size="26" font-weight="bold" fill="#0f172a" text-anchor="middle">THADAM — Decentralized AMR Fleet Architecture</text>
 
   <!-- AMR #1 Container -->
   <rect x="50" y="90" width="370" height="470" rx="16" fill="#f0f9ff" stroke="#0284c7" stroke-width="2" filter="url(#shadow)"/>

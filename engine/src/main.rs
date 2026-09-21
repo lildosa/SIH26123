@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 #[derive(Parser)]
-#[command(name = "sih26123", about = "SIH26123 Distributed AMR Fleet Coordination Engine")]
+#[command(name = "thadam", about = "THADAM — Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -429,7 +429,7 @@ async fn main() {
             }
         }
         None => {
-            println!("SIH26123 AMR Fleet Coordination Engine ready. Run with `sim`, `bench`, `dashboard`, or `--help`.");
+            println!("THADAM (Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh) ready. Run with `sim`, `bench`, `dashboard`, or `--help`.");
         }
     }
 }
