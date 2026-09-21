@@ -103,7 +103,7 @@ flowchart TD
 
 1. **Phase 1: Sense:** The AMR reads local sensors (ultrasonic/LiDAR rangefinder). If a dynamic obstacle is detected within its 3-cell sensing envelope along its current planned path, the robot transitions from `Moving` to `Replanning`.
 2. **Phase 2: Decide:** Inbound network packets are drained from the socket. Duplicate and out-of-order packets are dropped using per-peer sequence tracking. The Lamport logical clock is updated:
-   $$L_{\text{local}} = \max(L_{\text{local}}, L_{\text{msg}}) + 1$$
+   $$L_i = \max(L_i,\, L_{\text{msg}}) + 1$$
    The robot processes task announcements, computes auction bids, resolves right-of-way contentions, and populates its local outbox.
 3. **Phase 3: Deliver:** The node flushes its outbox, dispatching heartbeat, reservation intent, and auction messages across the network transport.
 4. **Phase 4: Move:** The robot advances its spatial coordinate $(x, y)$ or increments its turn-delay counter.
@@ -126,20 +126,20 @@ where:
 #### Turn-Delay Cost Matrix
 Differential-drive robots require finite physical time to rotate in place. Moving straight into an adjacent cell takes 1 tick. Turning incurs a stationary delay penalty:
 
-| Heading Change ($\Delta \theta$) | Action Taken | Duration | Space-Time Reservation Footprint |
+| Heading Change (Δθ) | Action Taken | Duration | Space-Time Reservation Footprint |
 | :--- | :--- | :--- | :--- |
-| **$0^\circ$ (Straight)** | Forward translation | 1 tick | Leaves $(x, y)$ at $t$, occupies $(x', y')$ at $t+1$ |
-| **$90^\circ$ (Turn)** | Rotate in place | 1 tick delay + 1 tick step | Holds $(x, y)$ locked at $t$ and $t+1$, moves at $t+2$ |
-| **$180^\circ$ (Turnaround)**| Reverse direction | 2 ticks delay + 1 tick step | Holds $(x, y)$ locked at $t, t+1, t+2$, moves at $t+3$ |
+| **0° (Straight)** | Forward translation | 1 tick | Leaves $(x, y)$ at $t$, occupies $(x', y')$ at $t+1$ |
+| **90° (Turn)** | Rotate in place | 1 tick delay + 1 tick step | Holds $(x, y)$ locked at $t$ and $t+1$, moves at $t+2$ |
+| **180° (Turnaround)** | Reverse direction | 2 ticks delay + 1 tick step | Holds $(x, y)$ locked at $t, t+1, t+2$, moves at $t+3$ |
 
-While rotating, the AMR holds a stationary reservation on $(x, y, t)$ through $(x, y, t + \Delta t_{\text{turn}})$. This prevents trailing or crossing robots from occupying the cell during the maneuver, structurally eliminating side-swipe and corner-clipping collisions.
+While rotating, the AMR holds a stationary reservation on $(x, y, t)$ through $(x, y, t + \Delta t_{\mathrm{turn}})$. This prevents trailing or crossing robots from occupying the cell during the maneuver, structurally eliminating side-swipe and corner-clipping collisions.
 
 #### Mutual Exclusion & Edge Swaps
 The `ReservationTable` (`engine/src/planner/reservations.rs`) enforces two strict invariants:
 1. **Vertex Conflict:** No two robots may occupy $(x, y)$ at the same tick $t$:
    $$\forall i \neq j, \quad p_i(t) \neq p_j(t)$$
 2. **Edge-Swap Conflict:** Two robots moving between adjacent cells $u$ and $v$ cannot cross paths in opposite directions simultaneously:
-   $$\neg \Big( p_i(t) = u \land p_i(t+1) = v \land p_j(t) = v \land p_j(t+1) = u \Big)$$
+   $$\neg \left( p_i(t) = u \land p_i(t+1) = v \land p_j(t) = v \land p_j(t+1) = u \right)$$
 
 ---
 
@@ -166,13 +166,13 @@ sequenceDiagram
 
 #### Multi-Factor Bid Cost Formulation
 When an AMR bids on task $T = (\text{pickup}, \text{dropoff})$, it evaluates a composite operational cost:
-$$C_i(T) = D_{\text{Manhattan}}(\text{pos}_i, \text{pickup}) + D_{\text{Manhattan}}(\text{pickup}, \text{dropoff}) + P_{\text{congestion}} + (1.0 - \text{SoC}_i) \cdot W_{\text{batt}} + P_{\text{busy}}$$
+$$C_i(T) = D_{\mathrm{Manhattan}}(\mathrm{pos}_i, \mathrm{pickup}) + D_{\mathrm{Manhattan}}(\mathrm{pickup}, \mathrm{dropoff}) + P_{\mathrm{congestion}} + (1.0 - \mathrm{SoC}_i) \cdot W_{\mathrm{batt}} + P_{\mathrm{busy}}$$
 
 Where:
-* $D_{\text{Manhattan}}$ is the distance between coordinates.
-* $P_{\text{congestion}}$ is an empirical penalty proportional to the number of active peer reservations inside the pickup aisle.
-* $(1.0 - \text{SoC}_i) \cdot W_{\text{batt}}$ penalizes AMRs with depleted batteries ($W_{\text{batt}} = 50.0$), forcing low-charge nodes to prioritize charging bays.
-* $P_{\text{busy}}$ is a high offset added if the robot is already executing a mission ($P_{\text{busy}} = 100.0$).
+* $D_{\mathrm{Manhattan}}$ is the distance between coordinates.
+* $P_{\mathrm{congestion}}$ is an empirical penalty proportional to the number of active peer reservations inside the pickup aisle.
+* $(1.0 - \mathrm{SoC}_i) \cdot W_{\mathrm{batt}}$ penalizes AMRs with depleted batteries ($W_{\mathrm{batt}} = 50.0$), forcing low-charge nodes to prioritize charging bays.
+* $P_{\mathrm{busy}}$ is a high offset added if the robot is already executing a mission ($P_{\mathrm{busy}} = 100.0$).
 
 The AMR with the lowest calculated cost wins the mission. Ties are resolved deterministically by selecting the lower `RobotId`.
 
@@ -237,19 +237,21 @@ All messages are wrapped in a strictly typed envelope:
 ```
 
 #### Monotonic Sequence Deduplication
-Each AMR tracks the highest sequence number seen from every individual peer:
-$$\text{last\_seq}[\text{peer\_id}]$$
-If an inbound envelope has $\text{seq} \le \text{last\_seq}[\text{peer\_id}]$, it is dropped immediately. This eliminates redundant processing caused by network reflections or multi-interface forwarding.
+Each AMR tracks the highest sequence number seen from every individual peer in an in-memory index:
+```rust
+last_seq: HashMap<RobotId, SeqNum>
+```
+If an inbound envelope satisfies `seq <= last_seq[peer_id]`, it is dropped immediately. This eliminates redundant processing caused by network reflections or multi-interface forwarding.
 
 #### Adaptive Burst Transport & Parity
 Critical control messages (`IntentMsg`, `ConflictMsg`, `YieldMsg`) cannot risk single-packet transmission loss. `AdaptiveBurstTransport` (`engine/src/network/fec.rs`) implements dual-burst transmission:
 * High-priority frames are sent twice with identical sequence numbers.
-* For an uncorrelated channel packet loss rate $p$, the effective loss probability drops from $p$ to $p^2$. At a $20\%$ packet drop rate ($p = 0.20$), delivery reliability improves to:
-  $$1 - p^2 = 1 - 0.04 = 96.0\%$$
+* For an uncorrelated channel packet loss rate $p$, the effective loss probability drops from $p$ to $p^2$. At a 20% packet drop rate ($p = 0.20$), delivery reliability improves to:
+  $$1 - p^2 = 1 - (0.20)^2 = 1 - 0.04 = 0.96 \quad (96.0\%)$$
 * Non-critical telemetry updates (poses, diagnostics) are transmitted as single bursts to preserve wireless channel bandwidth.
 
 #### Safety Watchdog & Disconnection Handling
-If an AMR fails to receive heartbeats from a known peer for $5$ consecutive ticks ($600\text{ ms}$):
+If an AMR fails to receive heartbeats from a known peer for 5 consecutive ticks (600 ms):
 1. The missing AMR is presumed disabled or communication-isolated.
 2. Its last reported spatial coordinate $(x, y)$ is converted into a permanent static obstacle in local Space-Time reservation tables.
 3. Any open auctions initiated by the missing node are cancelled and re-auctioned.
@@ -313,18 +315,18 @@ flowchart LR
 ### Serial Communication Protocol (115200 8N1 ASCII)
 Downlink commands and uplink telemetry frames use newline-delimited ASCII strings:
 
-* **Downlink (Controller $\to$ Microcontroller):**
+* **Downlink (Controller → Microcontroller):**
   * `CMD:MOVE:<dir>:<speed>`: Set motor direction (`F`, `B`, `L`, `R`) and 8-bit PWM speed (`0-255`).
   * `CMD:STOP`: Immediate PWM cutoff.
   * `CMD:PING`: Keep-alive ping to prevent watchdog tripping.
-* **Uplink (Microcontroller $\to$ Controller):**
-  * `TEL:<dist_cm>:<left_pwm>:<right_pwm>`: Periodic $10\text{ Hz}$ telemetry frame.
-  * `OBS:<dist_cm>`: Asynchronous emergency threshold trigger emitted when distance $\le 15.0\text{ cm}$.
+* **Uplink (Microcontroller → Controller):**
+  * `TEL:<dist_cm>:<left_pwm>:<right_pwm>`: Periodic 10 Hz telemetry frame.
+  * `OBS:<dist_cm>`: Asynchronous emergency threshold trigger emitted when distance <= 15.0 cm.
   * `PONG`: Keep-alive response.
 
 ### Sensor Noise Profile & Watchdog Guardrails
-* **Gaussian Jitter Emulation:** The HC-SR04 sensor mock models physical ultrasonic measurement noise using a Gaussian distribution ($\mu = 0.0\text{ cm}, \sigma = 1.2\text{ cm}$).
-* **ISO 3691-4 Safety Watchdog:** If the microcontroller stops receiving downlink command packets for $> 500\text{ ms}$, the watchdog trips: motor PWM is clamped to zero, status is forced to `DEAD`, and braking locks engage until a valid recovery packet arrives.
+* **Gaussian Jitter Emulation:** The HC-SR04 sensor mock models physical ultrasonic measurement noise using a Gaussian distribution (mean μ = 0.0 cm, standard deviation σ = 1.2 cm).
+* **ISO 3691-4 Safety Watchdog:** If the microcontroller stops receiving downlink command packets for > 500 ms, the watchdog trips: motor PWM is clamped to zero, status is forced to `DEAD`, and braking locks engage until a valid recovery packet arrives.
 
 ---
 
@@ -361,7 +363,7 @@ Benchmark metrics executed via `cargo bench` and `engine/tests/full_validation.r
 | **Makespan (2 AMRs)** | 45 ticks | 35 ticks | **+22.2% makespan improvement** |
 | **Makespan (4 AMRs)** | 78 ticks | 59 ticks | **+24.3% makespan improvement** |
 | **Makespan (8 AMRs)** | 124 ticks | 83 ticks | **+33.1% makespan improvement** |
-| **Failure Recovery Latency** | Full fleet replanning required | Localized edge replan ($< 5\text{ ms}$) | Zero fleet-wide stop commands |
+| **Failure Recovery Latency** | Full fleet replanning required | Localized edge replan (< 5 ms) | Zero fleet-wide stop commands |
 
 ---
 
@@ -370,13 +372,13 @@ Benchmark metrics executed via `cargo bench` and `engine/tests/full_validation.r
 ### Containerization & Multi-Stage Builds
 The project uses a multi-stage Docker build ([Dockerfile](file:///home/sanjeev/Downloads/SIH26123/Dockerfile)) based on Debian Slim and Rust 1.85:
 * **Stage 1 (Builder):** Compiles release artifacts with link-time optimization (LTO).
-* **Stage 2 (Runtime):** Packages a minimal distroless-style image containing only runtime dependencies (`ca-certificates`, `libssl3`), yielding a final container image under $85\text{ MB}$.
+* **Stage 2 (Runtime):** Packages a minimal distroless-style image containing only runtime dependencies (`ca-certificates`, `libssl3`), yielding a final container image under 85 MB.
 
 ### Network Interfaces & Port Mapping
 * **Web Dashboard & WebSocket Twin:** Port `3000` (TCP, HTTP/1.1 & WebSocket).
 * **Inter-Robot Peer Multicast:** Port `26123` (UDP Multicast group `239.0.26.123`). When deploying in multi-container Docker environments, `network_mode: host` or macvlan routing must be enabled to allow IGMP multicast packet forwarding across container network namespaces.
 
 ### Resource Footprint
-* **Binary Size:** $< 15\text{ MB}$ stripped release binary (`engine/target/release/sih26123`).
-* **Memory Footprint:** $\approx 18\text{ MB}$ RSS per active robot actor under continuous $15 \times 15$ warehouse simulation.
-* **Tick Latency:** Average decision phase execution takes $< 1.5\text{ ms}$ per tick on single-core ARM Cortex-A72 (Raspberry Pi 4B), well within the $120\text{ ms}$ physical tick budget.
+* **Binary Size:** < 15 MB stripped release binary (`engine/target/release/sih26123`).
+* **Memory Footprint:** ~18 MB RSS per active robot actor under continuous 15 x 15 warehouse simulation.
+* **Tick Latency:** Average decision phase execution takes < 1.5 ms per tick on single-core ARM Cortex-A72 (Raspberry Pi 4B), well within the 120 ms physical tick budget.
