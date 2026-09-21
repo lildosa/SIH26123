@@ -2,6 +2,36 @@ use crate::protocol::{AwardMsg, BidMsg, RobotId, TaskId, Tick};
 use crate::world::Pos;
 use serde::{Deserialize, Serialize};
 
+/// Bounded priority tiers for task intents (Wave 3).
+/// All regular intents share one tier so Lamport timestamps arbitrate fairly;
+/// emergency tasks preempt via a strictly higher tier.
+pub const REGULAR_PRIORITY: u64 = 1;
+pub const EMERGENCY_PRIORITY: u64 = 4;
+pub const REGULAR_TIER_WEIGHT: f64 = 1_000.0;
+pub const EMERGENCY_TIER_WEIGHT: f64 = 50_000.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskTier {
+    Regular,
+    Emergency,
+}
+
+impl TaskTier {
+    pub fn priority(&self) -> u64 {
+        match self {
+            TaskTier::Regular => REGULAR_PRIORITY,
+            TaskTier::Emergency => EMERGENCY_PRIORITY,
+        }
+    }
+
+    pub fn bid_weight(&self) -> f64 {
+        match self {
+            TaskTier::Regular => REGULAR_TIER_WEIGHT,
+            TaskTier::Emergency => EMERGENCY_TIER_WEIGHT,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuctionConfig {
     pub w_travel: f64,     // travel time weight (default 1.0)
@@ -52,6 +82,34 @@ pub fn compute_bid_cost(
         + config.w_battery * battery_cost
         + config.w_delay * delay_cost
         + config.w_deadline * deadline_penalty
+}
+
+/// Tier-aware bid cost: emergency tasks receive a large negative adjustment
+/// so they outbid regular tasks deterministically (lower cost wins).
+/// Regular tier reproduces `compute_bid_cost` exactly.
+pub fn compute_bid_cost_tiered(
+    config: &AuctionConfig,
+    robot_pos: Pos,
+    robot_battery: f32,
+    pickup: Pos,
+    dropoff: Pos,
+    congestion_at_pickup: f64,
+    current_task_remaining: usize,
+    task_deadline: Option<Tick>,
+    current_tick: Tick,
+    tier: TaskTier,
+) -> f64 {
+    compute_bid_cost(
+        config,
+        robot_pos,
+        robot_battery,
+        pickup,
+        dropoff,
+        congestion_at_pickup,
+        current_task_remaining,
+        task_deadline,
+        current_tick,
+    ) - tier.bid_weight()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

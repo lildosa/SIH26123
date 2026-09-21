@@ -1,7 +1,7 @@
 pub mod conflict;
 pub mod wait_for_graph;
 
-pub use conflict::{should_yield, should_yield_under_uncertainty};
+pub use conflict::{should_yield, should_yield_lamport, should_yield_under_uncertainty};
 pub use wait_for_graph::WaitForGraph;
 
 use crate::protocol::RobotId;

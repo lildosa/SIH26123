@@ -6,12 +6,39 @@ pub type TaskId = u32;
 pub type Tick = u64;
 pub type SeqNum = u64;
 
+/// Logical heading of a robot chassis on the 4-connected grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Orientation {
+    North,
+    East,
+    South,
+    West,
+}
+
+impl Orientation {
+    pub fn rotation_cost(&self, target: Orientation) -> u64 {
+        match (self, target) {
+            (a, b) if a == &b => 0,
+            (a, b) if (*a as u8).abs_diff(b as u8) == 2 => 2,
+            _ => 1,
+        }
+    }
+}
+
+impl Default for Orientation {
+    fn default() -> Self {
+        Orientation::North
+    }
+}
+
 /// Every outgoing message is wrapped in an Envelope.
 /// `seq` increments for EVERY outgoing message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub sender_id: RobotId,
     pub seq: SeqNum,
+    #[serde(default)]
+    pub lamport_ts: u64,
     pub payload: FleetMessage,
 }
 
@@ -30,6 +57,8 @@ pub struct PoseMsg {
     pub tick: Tick,
     pub battery: f32,
     pub status: RobotStatus,
+    #[serde(default)]
+    pub orientation: Option<Orientation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +73,8 @@ pub struct IntentMsg {
     pub intent_seq: SeqNum,
     pub path: Vec<(Pos, Tick)>,
     pub priority: u64,
+    #[serde(default)]
+    pub lamport_ts: u64,
 }
 
 /// Conflict challenge referencing specific intent versions.
@@ -51,6 +82,8 @@ pub struct IntentMsg {
 pub struct ConflictMsg {
     pub challenger_intent_seq: SeqNum,
     pub challenger_priority: u64,
+    #[serde(default)]
+    pub challenger_lamport: u64,
     pub challenged_id: RobotId,
     pub challenged_intent_seq: SeqNum,
     pub conflicting_cell: Pos,

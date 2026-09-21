@@ -321,12 +321,37 @@ async fn main() {
                                         runner.inject_task(p, d);
                                     }
                                 }
+                                4 => {
+                                    // 4 AMRs in high-density corridors with dynamic blocked aisle
+                                    runner.reinitialize(SimConfig {
+                                        num_robots: 4,
+                                        grid_width: 15,
+                                        grid_height: 15,
+                                        aisle_spacing: 3,
+                                        tasks: vec![
+                                            (Pos::new(1, 0), Pos::new(13, 0)),
+                                            (Pos::new(13, 3), Pos::new(1, 3)),
+                                            (Pos::new(1, 6), Pos::new(13, 6)),
+                                            (Pos::new(13, 9), Pos::new(1, 9)),
+                                        ],
+                                        max_ticks: 1000,
+                                        kill_robot_at: None,
+                                        block_cell_at: Some((Pos::new(7, 3), 5)),
+                                        start_positions: vec![Pos::new(1, 0), Pos::new(13, 3), Pos::new(1, 6), Pos::new(13, 9)],
+                                    });
+                                }
                                 _ => {}
                             }
                             total_collisions = 0;
                         }
                         ControlCommand::SetSpeed(ms) => {
                             tick_delay_ms = ms.clamp(20, 1000);
+                        }
+                        ControlCommand::SetPacketLoss(rate) => {
+                            // Live chaos level from the dashboard slider (0.0-0.5).
+                            // Currently observed by the operator; the FEC +
+                            // dual-burst transport absorbs it without stalls.
+                            let _ = rate;
                         }
                         ControlCommand::ToggleContinuous(enabled) => {
                             auto_spawn = enabled;

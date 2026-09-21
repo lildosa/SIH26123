@@ -9,6 +9,7 @@ pub struct IntentRecord {
     pub intent_seq: SeqNum,
     pub path: Vec<(Pos, Tick)>,
     pub priority: u64,
+    pub lamport_ts: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,7 @@ pub struct PeerConflict {
     pub peer_id: RobotId,
     pub peer_intent_seq: SeqNum,
     pub peer_priority: u64,
+    pub peer_lamport: u64,
     pub conflict_type: ConflictType,
 }
 
@@ -76,6 +78,7 @@ impl ReservationTable {
                 intent_seq: intent.intent_seq,
                 path: intent.path.clone(),
                 priority: intent.priority,
+                lamport_ts: intent.lamport_ts,
             },
         );
         true
@@ -110,6 +113,7 @@ impl ReservationTable {
                             peer_id: peer.robot_id,
                             peer_intent_seq: peer.intent_seq,
                             peer_priority: peer.priority,
+                            peer_lamport: peer.lamport_ts,
                             conflict_type: ConflictType::Vertex,
                         });
                     }
@@ -138,6 +142,7 @@ impl ReservationTable {
                             peer_id: peer.robot_id,
                             peer_intent_seq: peer.intent_seq,
                             peer_priority: peer.priority,
+                            peer_lamport: peer.lamport_ts,
                             conflict_type: ConflictType::EdgeSwap,
                         });
                     }

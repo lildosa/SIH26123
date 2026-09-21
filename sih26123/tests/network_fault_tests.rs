@@ -15,6 +15,7 @@ async fn test_faulty_transport_packet_drop_simulation() {
         .broadcast(Envelope {
             sender_id: 1,
             seq: 1,
+            lamport_ts: 0,
             payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
         })
         .await;
@@ -36,6 +37,7 @@ async fn test_faulty_transport_packet_duplication() {
         .broadcast(Envelope {
             sender_id: 1,
             seq: 1,
+            lamport_ts: 0,
             payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
         })
         .await;
@@ -57,6 +59,7 @@ async fn test_faulty_transport_latency_staged_delivery() {
         .broadcast(Envelope {
             sender_id: 1,
             seq: 1,
+            lamport_ts: 0,
             payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
         })
         .await;
@@ -81,6 +84,7 @@ async fn test_zero_loss_clean_channel() {
             .broadcast(Envelope {
                 sender_id: 1,
                 seq,
+                lamport_ts: 0,
                 payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: seq, battery: 1.0 }),
             })
             .await;

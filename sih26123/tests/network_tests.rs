@@ -10,6 +10,7 @@ async fn test_in_memory_tick_scoped_delivery() {
     let msg = Envelope {
         sender_id: 1,
         seq: 1,
+        lamport_ts: 0,
         payload: FleetMessage::Heartbeat(HeartbeatMsg {
             tick: 0,
             battery: 1.0,
@@ -40,6 +41,7 @@ async fn test_in_memory_no_self_echo() {
     node1.broadcast(Envelope {
         sender_id: 1,
         seq: 1,
+        lamport_ts: 0,
         payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
     }).await;
 
@@ -60,6 +62,7 @@ async fn test_faulty_network_drop() {
     faulty_node1.broadcast(Envelope {
         sender_id: 1,
         seq: 1,
+        lamport_ts: 0,
         payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
     }).await;
 
@@ -79,6 +82,7 @@ async fn test_faulty_network_duplicate() {
     faulty_node1.broadcast(Envelope {
         sender_id: 1,
         seq: 1,
+        lamport_ts: 0,
         payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
     }).await;
 
