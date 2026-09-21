@@ -216,7 +216,7 @@ SIH26123/
 +-- scripts/
 |   +-- hil_serial_mock.py        # Hardware-in-the-Loop serial telemetry mock & jitter tester
 |   +-- demo_matplotlib.py        # Standalone Python Matplotlib animated visualizer
-+-- sih26123/                     # Main Rust crate
++-- engine/                       # Main Rust crate (distributed engine & simulator)
     +-- Cargo.toml
     +-- src/
     |   +-- lib.rs                # Library exports

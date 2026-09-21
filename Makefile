@@ -1,7 +1,7 @@
 .PHONY: all build start run bench sim test docker-build docker-up docker-down clean help
 
 CARGO ?= cargo
-CARGO_DIR ?= sih26123
+CARGO_DIR ?= engine
 
 all: build
 
@@ -13,7 +13,7 @@ help:
 	@echo "  make bench        - Run comparative benchmark against Centralized CBS"
 	@echo "  make sim          - Run headless multi-robot simulation (4 robots, 8 tasks)"
 	@echo "  make test         - Execute all 49 automated integration tests"
-	@echo "  make build        - Compile release binary in sih26123/"
+	@echo "  make build        - Compile release binary in engine/"
 	@echo "  make docker-build - Build containerized Docker image"
 	@echo "  make docker-up    - Run containerized application via Docker Compose"
 	@echo "  make docker-down  - Stop Docker Compose container"
