@@ -1,9 +1,9 @@
 # Multi-stage Docker build for SIH26123 AMR Fleet Coordination Engine
 FROM rust:1.85-slim-bookworm AS builder
 
-WORKDIR /usr/src/sih26123
-COPY sih26123/Cargo.toml sih26123/Cargo.lock ./
-COPY sih26123/src ./src
+WORKDIR /usr/src/engine
+COPY engine/Cargo.toml engine/Cargo.lock ./
+COPY engine/src ./src
 
 RUN cargo build --release
 
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /usr/src/sih26123/target/release/sih26123 /usr/local/bin/sih26123
+COPY --from=builder /usr/src/engine/target/release/sih26123 /usr/local/bin/sih26123
 
 EXPOSE 3000
 
