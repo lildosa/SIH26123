@@ -22,5 +22,5 @@ EXPOSE 3000
 
 ENV RUST_LOG=info
 
-ENTRYPOINT ["sih26123"]
-CMD ["dashboard", "--port", "3000", "--robots", "4", "--tasks", "8"]
+ENTRYPOINT ["sh", "-c"]
+CMD ["sih26123 dashboard --port ${PORT:-3000} --robots 4 --tasks 8"]

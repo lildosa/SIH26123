@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: thadam-amr
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: singapore  # Change to: oregon, ohio, frankfurt, singapore
+    plan: starter       # free | starter | standard | pro
+    healthCheckPath: /  # Update if you have a /health endpoint
+    envVars:
+      - key: RUST_LOG
+        value: info
+    # Render injects PORT env var — ensure your app uses it or hardcode 3000
+    # The dashboard command uses --port 3000 which matches EXPOSE 3000
