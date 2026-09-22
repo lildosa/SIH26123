@@ -1,5 +1,5 @@
 # Multi-stage Docker build for THADAM (Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh)
-FROM rust:1.85-slim-bookworm AS builder
+FROM docker.io/library/rust:1.85-slim-bookworm AS builder
 
 WORKDIR /usr/src/engine
 COPY engine/Cargo.toml engine/Cargo.lock ./
@@ -7,7 +7,7 @@ COPY engine/src ./src
 
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM docker.io/library/debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

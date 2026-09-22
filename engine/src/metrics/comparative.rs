@@ -56,11 +56,21 @@ impl ComparativeBenchmark {
 
         for &n_robots in &self.scales {
             let mut starts = Vec::new();
-            for y in 0..self.grid_height {
-                for x in 0..self.grid_width {
+            for y in (0..self.grid_height).step_by(3) {
+                for x in (0..self.grid_width).step_by(3) {
                     let p = Pos::new(x, y);
                     if grid.is_walkable(p) && starts.len() < n_robots && !pickups.contains(&p) {
                         starts.push(p);
+                    }
+                }
+            }
+            if starts.len() < n_robots {
+                for y in 0..self.grid_height {
+                    for x in 0..self.grid_width {
+                        let p = Pos::new(x, y);
+                        if grid.is_walkable(p) && starts.len() < n_robots && !pickups.contains(&p) && !starts.contains(&p) {
+                            starts.push(p);
+                        }
                     }
                 }
             }

@@ -99,11 +99,21 @@ async fn main() {
                 .collect();
 
             let mut starts = Vec::new();
-            for y in 0..height {
-                for x in 0..width {
+            for y in (0..height).step_by(3) {
+                for x in (0..width).step_by(3) {
                     let p = Pos::new(x, y);
                     if grid.is_walkable(p) && starts.len() < robots && !pickups.contains(&p) {
                         starts.push(p);
+                    }
+                }
+            }
+            if starts.len() < robots {
+                for y in 0..height {
+                    for x in 0..width {
+                        let p = Pos::new(x, y);
+                        if grid.is_walkable(p) && starts.len() < robots && !pickups.contains(&p) && !starts.contains(&p) {
+                            starts.push(p);
+                        }
                     }
                 }
             }
@@ -169,11 +179,21 @@ async fn main() {
                 .collect();
 
             let mut starts = Vec::new();
-            for y in 0..height {
-                for x in 0..width {
+            for y in (0..height).step_by(3) {
+                for x in (0..width).step_by(3) {
                     let p = Pos::new(x, y);
                     if grid.is_walkable(p) && starts.len() < robots && !pickups.contains(&p) {
                         starts.push(p);
+                    }
+                }
+            }
+            if starts.len() < robots {
+                for y in 0..height {
+                    for x in 0..width {
+                        let p = Pos::new(x, y);
+                        if grid.is_walkable(p) && starts.len() < robots && !pickups.contains(&p) && !starts.contains(&p) {
+                            starts.push(p);
+                        }
                     }
                 }
             }
