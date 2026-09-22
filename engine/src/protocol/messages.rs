@@ -139,6 +139,14 @@ pub struct AwardMsg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitEdgeMsg {
+    pub waiter_id: RobotId,
+    pub blocking_id: RobotId,
+    pub tick: Tick,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FleetMessage {
     Pose(PoseMsg),
     Heartbeat(HeartbeatMsg),
@@ -149,4 +157,5 @@ pub enum FleetMessage {
     AuctionOpen(AuctionOpenMsg),
     Bid(BidMsg),
     Award(AwardMsg),
+    WaitEdge(WaitEdgeMsg),
 }

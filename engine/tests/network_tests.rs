@@ -21,7 +21,10 @@ async fn test_in_memory_tick_scoped_delivery() {
     node1.broadcast(msg.clone()).await;
 
     // Before flush, Node 2's inbox must be empty (tick-scoped staging)
-    assert!(node2.drain().await.is_empty(), "Message should be staged, not delivered before flush");
+    assert!(
+        node2.drain().await.is_empty(),
+        "Message should be staged, not delivered before flush"
+    );
 
     // Flush tick
     bus.flush_tick();
@@ -38,17 +41,25 @@ async fn test_in_memory_no_self_echo() {
     let bus = InMemoryBus::new();
     let node1 = bus.register_node(1);
 
-    node1.broadcast(Envelope {
-        sender_id: 1,
-        seq: 1,
-        lamport_ts: 0,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
-    }).await;
+    node1
+        .broadcast(Envelope {
+            sender_id: 1,
+            seq: 1,
+            lamport_ts: 0,
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 0,
+                battery: 1.0,
+            }),
+        })
+        .await;
 
     bus.flush_tick();
 
     // Node 1 must not receive its own broadcast
-    assert!(node1.drain().await.is_empty(), "Sender should not receive its own echo");
+    assert!(
+        node1.drain().await.is_empty(),
+        "Sender should not receive its own echo"
+    );
 }
 
 #[tokio::test]
@@ -59,16 +70,24 @@ async fn test_faulty_network_drop() {
 
     let faulty_node1 = FaultyNetwork::new(node1, 1.0, (0, 0), 0.0, 0); // 100% drop
 
-    faulty_node1.broadcast(Envelope {
-        sender_id: 1,
-        seq: 1,
-        lamport_ts: 0,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
-    }).await;
+    faulty_node1
+        .broadcast(Envelope {
+            sender_id: 1,
+            seq: 1,
+            lamport_ts: 0,
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 0,
+                battery: 1.0,
+            }),
+        })
+        .await;
 
     bus.flush_tick();
 
-    assert!(node2.drain().await.is_empty(), "100% drop rate should deliver 0 messages");
+    assert!(
+        node2.drain().await.is_empty(),
+        "100% drop rate should deliver 0 messages"
+    );
 }
 
 #[tokio::test]
@@ -79,15 +98,45 @@ async fn test_faulty_network_duplicate() {
 
     let faulty_node1 = FaultyNetwork::new(node1, 0.0, (0, 0), 1.0, 0); // 100% duplicate
 
-    faulty_node1.broadcast(Envelope {
-        sender_id: 1,
-        seq: 1,
-        lamport_ts: 0,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
-    }).await;
+    faulty_node1
+        .broadcast(Envelope {
+            sender_id: 1,
+            seq: 1,
+            lamport_ts: 0,
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 0,
+                battery: 1.0,
+            }),
+        })
+        .await;
 
     bus.flush_tick();
 
     let received = node2.drain().await;
-    assert_eq!(received.len(), 2, "100% duplicate rate should deliver 2 identical envelopes");
+    assert_eq!(
+        received.len(),
+        2,
+        "100% duplicate rate should deliver 2 identical envelopes"
+    );
+}
+
+#[tokio::test]
+async fn test_udp_mesh_so_reuseport() {
+    use sih26123::network::{UdpMeshConfig, UdpMeshNode};
+    use std::net::Ipv4Addr;
+
+    let config = UdpMeshConfig {
+        multicast_addr: Ipv4Addr::new(239, 0, 26, 123),
+        port: 26124,
+        bind_addr: Ipv4Addr::new(0, 0, 0, 0),
+    };
+
+    let node1 = UdpMeshNode::new(config.clone()).await;
+    assert!(node1.is_ok(), "First node binding must succeed");
+
+    let node2 = UdpMeshNode::new(config).await;
+    assert!(
+        node2.is_ok(),
+        "Second node binding on same port must succeed via SO_REUSEPORT"
+    );
 }

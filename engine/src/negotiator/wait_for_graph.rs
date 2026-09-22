@@ -23,6 +23,13 @@ impl WaitForGraph {
         }
     }
 
+    /// Removes a single directed wait edge.
+    pub fn remove_edge(&mut self, waiter: RobotId, blocking: RobotId) {
+        if let Some(targets) = self.edges.get_mut(&waiter) {
+            targets.remove(&blocking);
+        }
+    }
+
     /// Removes all incoming and outgoing edges for `robot_id`.
     pub fn remove_robot(&mut self, robot_id: RobotId) {
         self.edges.remove(&robot_id);
@@ -46,13 +53,7 @@ impl WaitForGraph {
 
         for node in all_nodes {
             if !visited.contains(&node) {
-                self.dfs_find_cycles(
-                    node,
-                    &mut visited,
-                    &mut on_stack,
-                    &mut path,
-                    &mut cycles,
-                );
+                self.dfs_find_cycles(node, &mut visited, &mut on_stack, &mut path, &mut cycles);
             }
         }
 

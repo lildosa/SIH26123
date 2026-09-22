@@ -52,22 +52,22 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 ```
 
 ### 2.1 Discrete Space-Time Reservation Grid with Heading Change Latency
-- Path trajectories are planned in 3-dimensional space-time $(x, y, t)$ across discrete warehouse cells.
-- **Turn-Delay Cost Matrix:** Rotational latency is explicitly modeled as a discrete cost penalty rather than unphysical continuous curves: a 90° heading rotation costs a 1-tick delay, while a 180° turnaround costs 2 ticks.
-- **Stationary Reservation Locks:** While changing heading, the AMR locks its current cell in space-time across the turn duration, preventing incoming peers from encroaching and mathematically eliminating turning collisions.
-- Enforces strict vertex non-occupancy constraints (preventing two robots on the same cell at tick $t$) and directional edge-swap constraints (preventing robots from crossing adjacent cells in opposite directions $(u, v) \leftrightarrow (v, u)$).
+- Path trajectories are planned in 3-dimensional space-time $(x, y, t)$ with explicit robot heading: $s = (x, y, \theta, t)$ where $\theta \in \{\text{North}, \text{East}, \text{South}, \text{West}\}$.
+- **Turn-Delay Cost Matrix:** Rotational latency is explicitly modeled as a discrete cost penalty rather than unphysical continuous curves: a 90° heading rotation costs a 1-tick delay, while a 180° turnaround costs 2 ticks. Kinematic heuristics (`kinematic_heuristic`) guide A* with rotational overheads.
+- **Stationary Reservation Locks & Edge-Swap Verification:** While changing heading, the AMR locks its current cell in space-time across the turn duration, preventing incoming peers from encroaching. Directional edge-swap constraints ($(u, v) \leftrightarrow (v, u)$) are evaluated at the exact physical departure tick $(t + \Delta t_{\text{turn}})$, mathematically eliminating turning and crossing collisions.
 - When a robot's path is blocked, it negotiates or waits in-place using temporal wait moves before re-routing.
 
 ### 2.2 Contract Net Protocol (CNP) Multi-Factor Auctions
 - When a warehouse order arrives, AMRs autonomously broadcast task announcements over the P2P mesh.
 - Idle robots compute a multi-factor marginal cost function:
   $$\text{Cost} = w_{\text{travel}} \cdot d_{\text{travel}} + w_{\text{congestion}} \cdot C_{\text{pickup}} + w_{\text{battery}} \cdot (1 - B) + w_{\text{delay}} \cdot \text{Delay} + w_{\text{deadline}} \cdot \text{Penalty}$$
-- Bids are collected within a configured tick window (default: 5 ticks), and the contract is awarded deterministically to the lowest-cost bidder with tie-breaking by Robot ID.
+- Bids are collected within a configured tick window (default: 5 ticks), and the contract is awarded deterministically by the authoritative designated auctioneer to the lowest-cost bidder with tie-breaking by Robot ID. Busy robots reject redundant awards, immediately re-opening tasks for peer bidding.
 
-### 2.3 Wait-For-Graph (WFG) Deadlock Cycle Detection
+### 2.3 Distributed Wait-For-Graph (WFG) Gossip & Deadlock Cycle Breaking
 - In narrow corridors and 4-way intersections, robots construct local dependency graphs where edge $R_i \to R_j$ indicates that $R_i$ is waiting for $R_j$ to vacate a cell.
+- **Distributed WaitEdge Gossip:** When an AMR yields under conflict, it broadcasts `WaitEdgeMsg { waiter_id, blocking_id, tick, active: true }`. Peer AMRs ingest these messages into their local graphs, enabling transitive global cycle detection without any centralized coordinator.
 - A depth-first search (DFS) algorithm detects circular wait dependencies ($R_1 \to R_2 \to R_3 \to R_1$) in $O(V + E)$ time.
-- Cycles are resolved deterministically: the robot with the lowest priority yields and re-routes, breaking gridlocks without human intervention.
+- Cycles are resolved deterministically: the robot in the cycle with the lowest priority yields and re-routes, then broadcasts `WaitEdgeMsg { active: false }` to purge resolved edges across the mesh.
 
 ### 2.4 ISO 3691-4 Fail-Safe Sensing & Dead Chassis Handling
 - Each robot continuously senses obstacles within a 3-cell radius.
@@ -76,13 +76,14 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 ### 2.5 Causal Lamport Logical Clocks & Forward Error Correction (FEC)
 - **Lamport Logical Clocks:** Every P2P broadcast embeds a monotonically increasing Lamport timestamp ($L$). Receivers update $L_{\text{local}} = \max(L_{\text{local}}, L_{\text{msg}}) + 1$. Deterministic arbitration orders concurrent claims by: (1) higher priority, (2) older Lamport timestamp, and (3) lower Robot ID.
 - **UDP Sequence Deduplication:** Monotonic sequence numbers tracked per peer ($O(1)$ filter) immediately reject stale, out-of-order, or duplicated network packets.
-- **Reed-Solomon & Adaptive Dual-Burst FEC:** High-priority control frames (`Intent`, `Conflict`, `Yield`) use dual-burst transmission ($N=2$), ensuring survival probability $(1 - p^2)$ at drop rate $p$ (e.g. 96% delivery at 20% loss) with zero buffering latency. Bulk state transfers utilize systematic XOR / Reed-Solomon parity blocks.
+- **Adaptive Dual-Burst FEC & Single-Parity XOR Blocks:** High-priority control frames (`Intent`, `Conflict`, `Yield`) use dual-burst transmission ($N=2$), ensuring survival probability $(1 - p^2)$ at drop rate $p$ (e.g. 96% delivery at 20% loss) with zero buffering latency. Bulk state transfers utilize systematic single-parity XOR block encoding.
+- **Production Multicast Socket SO_REUSEPORT:** `UdpMeshNetwork` creates sockets configured with `SO_REUSEPORT` and `SO_REUSEADDR` via `socket2`, allowing multiple AMR processes to concurrently bind to port `26123` on Linux without socket contention.
 
 ---
 
 ## 3. Quantitative Performance & Verification
 
-The system includes a comparative benchmarking pipeline evaluating the decentralized engine against a centralized Conflict-Based Search (CBS) dispatcher with FIFO queuing.
+The system includes a comparative benchmarking pipeline evaluating the decentralized engine against a centralized Conflict-Based Search (CBS) dispatcher running concurrent multi-agent batch pathfinding with FIFO queuing.
 
 ```
 +------------------------------------------------------------------------------------+
@@ -97,9 +98,9 @@ The system includes a comparative benchmarking pipeline evaluating the decentral
 +------------------------------------------------------------------------------------+
 ```
 
-All 60 automated integration tests across 14 test suites pass with 100% reliability:
+All 61 automated integration tests across 14 test suites (plus unit tests) pass with 100% reliability:
 - `auction_tests` (6 tests): Idle bidding, congestion scaling, tie-breaking, deadline urgency.
-- `baseline_tests` (2 tests): Centralized CBS pathfinder and FIFO dispatcher validation.
+- `baseline_tests` (2 tests): Centralized concurrent multi-agent CBS pathfinder and FIFO dispatcher validation.
 - `chaos_tests` (3 tests): Dual-burst FEC recovery, network partition split-brain, dead robot re-auction.
 - `deadlock_tests` (9 tests): Simple cycle, 3-robot cycle, multiple independent cycles, priority yielding.
 - `dedup_and_staleness_tests` (6 tests): Monotonic sequence ordering, duplicate rejection, stale view resilience.
@@ -108,7 +109,7 @@ All 60 automated integration tests across 14 test suites pass with 100% reliabil
 - `lamport_tests` (14 tests): Causal ordering, Lamport clock increment/merge, deterministic tie-breaking.
 - `metrics_tests` (2 tests): Telemetry collector aggregation and comparative metrics.
 - `network_fault_tests` (4 tests): 100% packet loss, packet duplication, and staged latency delivery.
-- `network_tests` (4 tests): Tick-scoped delivery and zero self-echo validation.
+- `network_tests` (5 tests): Tick-scoped delivery, zero self-echo validation, and SO_REUSEPORT multicast socket sharing.
 - `planner_tests` (9 tests): Space-Time A*, edge-swap conflict detection, bottleneck waiting.
 - `scenario_tests` (3 tests): Choke-point navigation, dynamic obstacle replanning, peer kill reassignment.
 - `simulation_tests` (3 tests): Synchronous 5-phase execution and zero collision multi-task runs.

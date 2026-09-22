@@ -1,5 +1,5 @@
-use crate::network::fec::AdaptiveBurstTransport;
 use crate::network::Network;
+use crate::network::fec::AdaptiveBurstTransport;
 use crate::protocol::Envelope;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
@@ -33,8 +33,19 @@ pub struct UdpMeshNode {
 
 impl UdpMeshNode {
     pub async fn new(config: UdpMeshConfig) -> std::io::Result<Self> {
+        let sock2 = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        sock2.set_reuse_address(true)?;
+        #[cfg(unix)]
+        sock2.set_reuse_port(true)?;
+        sock2.set_nonblocking(true)?;
         let bind_addr = SocketAddrV4::new(config.bind_addr, config.port);
-        let socket = UdpSocket::bind(bind_addr).await?;
+        sock2.bind(&bind_addr.into())?;
+        let std_sock: std::net::UdpSocket = sock2.into();
+        let socket = UdpSocket::from_std(std_sock)?;
         socket.join_multicast_v4(config.multicast_addr, config.bind_addr)?;
 
         let socket = Arc::new(socket);

@@ -41,7 +41,7 @@ flowchart TD
 
     subgraph Transport["Lossy Mesh Transport (UDP Multicast: 239.0.26.123:26123)"]
         direction TB
-        P2P["Adaptive Dual-Burst Transport<br/>+ Reed-Solomon FEC Parity"]
+        P2P["Adaptive Dual-Burst Transport<br/>+ Single-Parity XOR Block FEC"]
     end
 
     subgraph Observability["Decoupled Observability & Diagnostics"]
@@ -134,6 +134,12 @@ Differential-drive robots require finite physical time to rotate in place. Movin
 
 While rotating, the AMR holds a stationary reservation on $(x, y, t)$ through $(x, y, t + \Delta t_{\mathrm{turn}})$. This prevents trailing or crossing robots from occupying the cell during the maneuver, structurally eliminating side-swipe and corner-clipping collisions.
 
+#### Orientation-Aware Space-Time A* (`plan_with_orientation`)
+Path generation in `engine/src/planner/space_time_a_star.rs` evaluates headings using the `Orientation` enum:
+* **State Expansion:** Transitions consider 4 cardinal moves plus in-place rotations.
+* **Turn-Aware Heuristic:** `kinematic_heuristic(pos, goal, heading)` estimates Manhattan distance plus rotational latency (e.g. 1 tick for 90°, 2 ticks for 180°), producing optimal paths that minimize unnecessary turns.
+* **Edge-Swap Verification at Departure:** When a robot turns before stepping into cell $v$, directional edge-swap constraints (`constraints.forbidden_edges`) are checked at the exact physical departure tick $(t + \Delta t_{\text{turn}})$, guaranteeing that a crossing peer cannot enter $u$ simultaneously with the robot leaving for $v$.
+
 #### Mutual Exclusion & Edge Swaps
 The `ReservationTable` (`engine/src/planner/reservations.rs`) enforces two strict invariants:
 1. **Vertex Conflict:** No two robots may occupy $(x, y)$ at the same tick $t$:
@@ -193,7 +199,7 @@ Decision Hierarchy:
 ```
 
 #### Wait-For-Graph (WFG) Deadlock Resolution
-In bidirectional corridor stalemates, pairwise yielding can create circular wait chains ($A \to B \to C \to A$). Each robot maintains a localized Wait-For-Graph:
+In bidirectional corridor stalemates, pairwise yielding can create circular wait chains ($A \to B \to C \to A$). Each robot maintains a localized Wait-For-Graph (`engine/src/negotiator/wait_for_graph.rs`):
 
 ```mermaid
 flowchart LR
@@ -205,9 +211,12 @@ flowchart LR
     class C cycle;
 ```
 
-When cycle detection identifies a closed dependency loop:
-1. The robot in the cycle with the lowest global priority (highest Lamport timestamp or highest Robot ID) is flagged as the yield candidate.
-2. The yielding robot clears its forward space-time reservations, transitions to `Yielding`, and backs into the nearest designated aisle cut-out or waits in place for $N$ ticks, allowing higher-priority traffic to clear the bottleneck.
+#### Distributed WaitEdge Gossip Protocol
+To enable deadlock cycle detection across multi-robot dependency chains without a central lock manager, the engine employs a distributed gossip mechanism:
+* **Edge Gossip Broadcast:** When robot $R_i$ yields to robot $R_j$ due to a conflicting reservation, $R_i$ broadcasts `WaitEdgeMsg { waiter_id: i, blocking_id: j, tick: t, active: true }` across the P2P mesh.
+* **Mesh Ingestion:** Every peer receiving the message inserts $(i, j)$ into its local `WaitForGraph`. Through pairwise gossip, each AMR's local graph reconstructs the transitively complete multi-agent dependency topology.
+* **Cycle Detection:** A depth-first search runs in $O(V + E)$ time to detect directed cycles.
+* **Deterministic Resolution & Edge Retraction:** The robot in the cycle with lowest global priority yields, cancels its conflicting path, and broadcasts `WaitEdgeMsg { waiter_id: i, blocking_id: j, tick: t, active: false }`. All nodes simultaneously remove the resolved edge via `WaitForGraph::remove_edge`, freeing the graph without stale edge contamination.
 
 ---
 
@@ -243,12 +252,19 @@ last_seq: HashMap<RobotId, SeqNum>
 ```
 If an inbound envelope satisfies `seq <= last_seq[peer_id]`, it is dropped immediately. This eliminates redundant processing caused by network reflections or multi-interface forwarding.
 
-#### Adaptive Burst Transport & Parity
-Critical control messages (`IntentMsg`, `ConflictMsg`, `YieldMsg`) cannot risk single-packet transmission loss. `AdaptiveBurstTransport` (`engine/src/network/fec.rs`) implements dual-burst transmission:
-* High-priority frames are sent twice with identical sequence numbers.
-* For an uncorrelated channel packet loss rate $p$, the effective loss probability drops from $p$ to $p^2$. At a 20% packet drop rate ($p = 0.20$), delivery reliability improves to:
+#### Adaptive Burst Transport & Forward Error Correction
+The network layer provides hybrid error correction tailored to message criticality without introducing artificial buffering latency:
+* **Adaptive Dual-Burst FEC:** Critical control frames (`IntentMsg`, `ConflictMsg`, `YieldMsg`) are wrapped in `AdaptiveBurstTransport` (`engine/src/network/fec.rs`) and transmitted twice back-to-back ($N=2$) with identical sequence numbers.
+  For an uncorrelated channel packet loss rate $p$, the effective drop rate falls to $p^2$. At a 20% packet drop rate ($p = 0.20$), delivery reliability improves to:
   $$1 - p^2 = 1 - (0.20)^2 = 1 - 0.04 = 0.96 \quad (96.0\%)$$
-* Non-critical telemetry updates (poses, diagnostics) are transmitted as single bursts to preserve wireless channel bandwidth.
+  The receiving node's sequence deduplicator accepts the first arrival and drops the duplicate in $O(1)$ time with zero decoding overhead.
+* **Systematic Single-Parity XOR Block Encoding:** Bulk state synchronization and large map fragments utilize chunked single-parity XOR block encoding (`encode_fec_block` / `decode_missing_single`). A single dropped chunk in a block is reconstructed instantaneously via XOR reduction without external linear algebra libraries.
+* Non-critical telemetry frames (heartbeats, poses) use single-burst transmission to conserve RF bandwidth.
+
+#### Multicast Socket Configuration (`SO_REUSEPORT`)
+To support concurrent multi-agent nodes running on a single host or shared container network namespace, `UdpMeshNetwork` (`engine/src/network/udp_mesh.rs`) binds sockets via the `socket2` crate:
+* Both `SO_REUSEADDR` and `SO_REUSEPORT` are enabled prior to binding to `0.0.0.0:26123`.
+* Sockets join the IGMP multicast group `239.0.26.123` across all local interfaces, enabling collision-free multi-process hardware emulation and testing.
 
 #### Safety Watchdog & Disconnection Handling
 If an AMR fails to receive heartbeats from a known peer for 5 consecutive ticks (600 ms):
@@ -336,22 +352,24 @@ To validate algorithmic efficiency, the engine embeds a reference implementation
 
 ```mermaid
 flowchart TD
-    subgraph CentralizedCBS["Centralized CBS Architecture"]
-        CBS_ROOT["High-Level Constraint Tree Search"]
-        CBS_LOW["Low-Level Individual A* Solvers"]
-        CBS_QUEUE["Central Dispatch Serialization Queue"]
+    subgraph CentralizedCBS["Centralized Multi-Agent CBS Architecture"]
+        CBS_BATCH["Concurrent Multi-Agent Batch Collector"]
+        CBS_ROOT["High-Level Conflict Tree Search (Branch on Vertex/Edge Swaps)"]
+        CBS_LOW["Low-Level Individual Space-Time A* Solvers"]
+        CBS_BATCH --> CBS_ROOT
         CBS_ROOT --> CBS_LOW
-        CBS_LOW --> CBS_QUEUE
     end
 
-    subgraph SwarmEdge["Distributed SwarmEdge Engine"]
-        SWARM_AUCTION["Local Contract Net Bidding"]
+    subgraph THADAM["THADAM Distributed Engine"]
+        SWARM_AUCTION["Edge Contract Net Bidding & Multi-Factor Scoring"]
         SWARM_ASTAR["Edge Space-Time A* with Heading Latency"]
-        SWARM_WFG["Decentralized Wait-For-Graph Cycle Breaking"]
+        SWARM_WFG["Distributed WaitEdge Gossip & Cycle Breaking"]
         SWARM_AUCTION --> SWARM_ASTAR
         SWARM_ASTAR --> SWARM_WFG
     end
 ```
+
+The centralized baseline dispatcher (`CentralizedRunner`) models production centralized fleet servers by grouping all idle robots with assigned missions into concurrent batches and submitting them simultaneously into `cbs_plan(&self.grid, &batch_agents, tick)`. CBS branches on spatio-temporal collisions across all agents in the batch, guaranteeing collision-free joint trajectories with sequential Space-Time A* fallback on search timeout.
 
 ### Empirical Scaling Performance
 Benchmark metrics executed via `cargo bench` and `engine/tests/full_validation.rs` evaluate performance across identical warehouse configurations:

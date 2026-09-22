@@ -36,30 +36,89 @@ impl CentralizedRunner {
 
         let mut completed_tasks = 0;
         let mut max_makespan: Tick = 0;
+        let mut task_idx = 0;
 
-        for &(_pickup, _dropoff) in &self.config.tasks {
-            let (best_robot_idx, &avail_tick) = robot_available_at
-                .iter()
-                .enumerate()
-                .min_by_key(|entry| *entry.1)
-                .unwrap();
+        while task_idx < self.config.tasks.len() {
+            let min_tick = *robot_available_at.iter().min().unwrap_or(&0);
+            let mut batch_agents_pickup = Vec::new();
+            let mut assigned_robots = Vec::new();
+            let mut task_pairs = Vec::new();
 
-            let robot_id = (best_robot_idx + 1) as RobotId;
-            let start_pos = robot_positions[best_robot_idx];
+            for r_idx in 0..self.config.num_robots {
+                if robot_available_at[r_idx] <= min_tick && task_idx < self.config.tasks.len() {
+                    let robot_id = (r_idx + 1) as RobotId;
+                    let start_pos = robot_positions[r_idx];
+                    let (pickup, dropoff) = self.config.tasks[task_idx];
+                    batch_agents_pickup.push((robot_id, start_pos, pickup));
+                    assigned_robots.push(r_idx);
+                    task_pairs.push((pickup, dropoff));
+                    task_idx += 1;
+                }
+            }
 
-            // 1. Plan to pickup
-            let agents_pickup = vec![(robot_id, start_pos, _pickup)];
-            if let Some(paths1) = cbs_plan(&self.grid, &agents_pickup, avail_tick) {
-                let pickup_tick = avail_tick + paths1[0].len().saturating_sub(1) as u64;
+            if batch_agents_pickup.is_empty() {
+                break;
+            }
 
-                // 2. Plan from pickup to dropoff
-                let agents_dropoff = vec![(robot_id, _pickup, _dropoff)];
-                if let Some(paths2) = cbs_plan(&self.grid, &agents_dropoff, pickup_tick) {
-                    let end_tick = pickup_tick + paths2[0].len().saturating_sub(1) as u64;
-                    robot_available_at[best_robot_idx] = end_tick;
-                    robot_positions[best_robot_idx] = _dropoff;
-                    completed_tasks += 1;
-                    max_makespan = max_makespan.max(end_tick);
+            // Multi-agent CBS across all concurrent active agents
+            if let Some(pickup_paths) = cbs_plan(&self.grid, &batch_agents_pickup, min_tick) {
+                let mut batch_agents_dropoff = Vec::new();
+                let mut dropoff_start_tick = min_tick;
+
+                for (i, p_path) in pickup_paths.iter().enumerate() {
+                    let r_idx = assigned_robots[i];
+                    let robot_id = (r_idx + 1) as RobotId;
+                    let p_tick = min_tick + p_path.len().saturating_sub(1) as u64;
+                    dropoff_start_tick = dropoff_start_tick.max(p_tick);
+                    let (pickup, dropoff) = task_pairs[i];
+                    batch_agents_dropoff.push((robot_id, pickup, dropoff));
+                }
+
+                if let Some(dropoff_paths) =
+                    cbs_plan(&self.grid, &batch_agents_dropoff, dropoff_start_tick)
+                {
+                    for (i, d_path) in dropoff_paths.iter().enumerate() {
+                        let r_idx = assigned_robots[i];
+                        let end_tick = dropoff_start_tick + d_path.len().saturating_sub(1) as u64;
+                        robot_available_at[r_idx] = end_tick;
+                        robot_positions[r_idx] = task_pairs[i].1;
+                        completed_tasks += 1;
+                        max_makespan = max_makespan.max(end_tick);
+                    }
+                } else {
+                    for (i, &(robot_id, pickup, dropoff)) in batch_agents_dropoff.iter().enumerate()
+                    {
+                        let r_idx = assigned_robots[i];
+                        let p_tick = min_tick + pickup_paths[i].len().saturating_sub(1) as u64;
+                        if let Some(single_path) =
+                            cbs_plan(&self.grid, &[(robot_id, pickup, dropoff)], p_tick)
+                        {
+                            let end_tick = p_tick + single_path[0].len().saturating_sub(1) as u64;
+                            robot_available_at[r_idx] = end_tick;
+                            robot_positions[r_idx] = dropoff;
+                            completed_tasks += 1;
+                            max_makespan = max_makespan.max(end_tick);
+                        }
+                    }
+                }
+            } else {
+                for (i, &(robot_id, start_pos, pickup)) in batch_agents_pickup.iter().enumerate() {
+                    let r_idx = assigned_robots[i];
+                    let (_pickup, dropoff) = task_pairs[i];
+                    if let Some(paths1) =
+                        cbs_plan(&self.grid, &[(robot_id, start_pos, pickup)], min_tick)
+                    {
+                        let p_tick = min_tick + paths1[0].len().saturating_sub(1) as u64;
+                        if let Some(paths2) =
+                            cbs_plan(&self.grid, &[(robot_id, pickup, dropoff)], p_tick)
+                        {
+                            let end_tick = p_tick + paths2[0].len().saturating_sub(1) as u64;
+                            robot_available_at[r_idx] = end_tick;
+                            robot_positions[r_idx] = dropoff;
+                            completed_tasks += 1;
+                            max_makespan = max_makespan.max(end_tick);
+                        }
+                    }
                 }
             }
         }

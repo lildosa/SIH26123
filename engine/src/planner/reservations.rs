@@ -165,9 +165,7 @@ impl ReservationTable {
                 let (p_from, p_t_from) = p_window[0];
                 let (p_to, p_t_to) = p_window[1];
                 if p_t_to == p_t_from + 1 && p_from != p_to {
-                    constraints
-                        .forbidden_edges
-                        .insert((p_to, p_from, p_t_from));
+                    constraints.forbidden_edges.insert((p_to, p_from, p_t_from));
                 }
             }
         }
@@ -192,19 +190,25 @@ impl ReservationTable {
 
             // Peer's current position is forbidden for current tick and next tick
             constraints.forbidden_cells.insert((peer_pos, current_tick));
-            constraints.forbidden_cells.insert((peer_pos, current_tick + 1));
+            constraints
+                .forbidden_cells
+                .insert((peer_pos, current_tick + 1));
 
             // Check peer's announced path
             let mut remaining_steps: Vec<Pos> = Vec::new();
             if let Some(peer_intent) = self.peer_intents.get(&peer_id) {
                 if let Some(curr_idx) = peer_intent.path.iter().position(|&(p, _)| p == peer_pos) {
-                    remaining_steps = peer_intent.path[curr_idx..].iter().map(|&(p, _)| p).collect();
+                    remaining_steps = peer_intent.path[curr_idx..]
+                        .iter()
+                        .map(|&(p, _)| p)
+                        .collect();
                 }
             }
 
             if remaining_steps.is_empty() {
-                // Fully stationary peer -> forbid peer_pos for entire horizon
-                for t in current_tick..=(current_tick + horizon) {
+                // Stationary peer -> hold cell for short horizon (up to 8 ticks)
+                let hold = horizon.min(8);
+                for t in current_tick..=(current_tick + hold) {
                     constraints.forbidden_cells.insert((peer_pos, t));
                 }
             } else {
@@ -225,10 +229,11 @@ impl ReservationTable {
                     }
                 }
 
-                // After reaching destination, peer stays at endpoint for remainder of horizon
+                // After reaching destination, peer stays at endpoint for reasonable hold window
                 if let Some(&end_pos) = remaining_steps.last() {
                     let end_tick = current_tick + remaining_steps.len() as u64;
-                    for t in end_tick..=(current_tick + horizon) {
+                    let hold_end = (end_tick + 8).min(current_tick + horizon);
+                    for t in end_tick..=hold_end {
                         constraints.forbidden_cells.insert((end_pos, t));
                     }
                 }

@@ -213,9 +213,6 @@ pub fn plan_with_orientation(
     if !grid.is_walkable(start) || !grid.is_walkable(goal) {
         return None;
     }
-    if constraints.forbidden_cells.contains(&(start, start_tick)) {
-        return None;
-    }
 
     let mut open_set = BinaryHeap::new();
     let mut closed_set: HashSet<(Pos, Tick, Orientation)> = HashSet::new();
@@ -304,7 +301,7 @@ pub fn plan_with_orientation(
             // Turning invariant: intermediate stationary ticks at `current.pos`
             // must be free, plus the arrival cell at `arrival_tick`.
             let mut blocked = false;
-            for t in (current.tick + 1)..=arrival_tick {
+            for t in (current.tick + 1)..arrival_tick {
                 if constraints.forbidden_cells.contains(&(current.pos, t)) {
                     blocked = true;
                     break;
@@ -319,12 +316,10 @@ pub fn plan_with_orientation(
             {
                 continue;
             }
-            if turn == 0
-                && constraints.forbidden_edges.contains(&(
-                    current.pos,
-                    next_pos,
-                    current.tick,
-                ))
+            let step_tick = current.tick + turn as u64;
+            if constraints
+                .forbidden_edges
+                .contains(&(current.pos, next_pos, step_tick))
             {
                 continue;
             }

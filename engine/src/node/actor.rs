@@ -1,12 +1,13 @@
-use crate::auction::{compute_bid_cost, Auction, AuctionConfig};
-use crate::negotiator::{resolve_deadlocks, should_yield_lamport, WaitForGraph};
+use crate::auction::{Auction, AuctionConfig, compute_bid_cost};
+use crate::negotiator::{WaitForGraph, resolve_deadlocks, should_yield_lamport};
 use crate::network::Network;
 use crate::node::environment::Environment;
 use crate::node::state::RobotState;
-use crate::planner::{plan, ReservationTable};
+use crate::planner::{ReservationTable, orientation_between, plan_with_orientation};
 use crate::protocol::{
     AuctionOpenMsg, AwardMsg, BidMsg, ConflictMsg, Envelope, FleetMessage, HeartbeatMsg, IntentMsg,
-    PoseMsg, RobotId, RobotStatus, SeqNum, TaskId, TaskState, TaskStatusMsg, Tick, YieldMsg,
+    Orientation, PoseMsg, RobotId, RobotStatus, SeqNum, TaskId, TaskState, TaskStatusMsg, Tick,
+    WaitEdgeMsg, YieldMsg,
 };
 use crate::world::{Cell, GridMap, Pos};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,8 @@ pub struct RobotTelemetry {
     pub status: RobotStatus,
     pub path: Vec<Pos>,
     pub task: Option<TaskId>,
+    #[serde(default)]
+    pub orientation: Option<Orientation>,
 }
 
 /// Default priority tier for regular (non-emergency) intents.
@@ -33,6 +36,7 @@ pub const REGULAR_INTENT_PRIORITY: u64 = 1;
 pub struct RobotActor {
     pub id: RobotId,
     pub pos: Pos,
+    pub orientation: Orientation,
     pub battery: f32,
     pub state: RobotState,
 
@@ -53,6 +57,7 @@ pub struct RobotActor {
     pub last_heartbeats: HashMap<RobotId, Tick>,
 
     pub assigned_task: Option<(TaskId, Pos, Pos)>,
+    pub carrying_task: Option<TaskId>,
     pub known_tasks: HashMap<TaskId, TaskStatusMsg>,
     pub pending_auctions: HashMap<TaskId, Auction>,
     pub auction_config: AuctionConfig,
@@ -87,12 +92,14 @@ impl RobotActor {
             status: RobotStatus::Idle,
             path: Vec::new(),
             task: None,
+            orientation: Some(Orientation::East),
         };
         let (telemetry_tx, telemetry_rx) = watch::channel(initial_telemetry);
 
         Self {
             id,
             pos,
+            orientation: Orientation::East,
             battery: 1.0,
             state: RobotState::Idle,
 
@@ -113,6 +120,7 @@ impl RobotActor {
             last_heartbeats: HashMap::new(),
 
             assigned_task: None,
+            carrying_task: None,
             known_tasks: HashMap::new(),
             pending_auctions: HashMap::new(),
             auction_config: AuctionConfig::default(),
@@ -151,13 +159,18 @@ impl RobotActor {
             return;
         }
 
-        self.local_obstacles.retain(|obs| self.environment.is_blocked(*obs));
+        self.local_obstacles
+            .retain(|obs| self.environment.is_blocked(*obs));
         let sensed = self.environment.sense_obstacles(self.pos, 3);
         let mut path_blocked = false;
 
         for obs in sensed {
             if self.local_obstacles.insert(obs) {
-                if let RobotState::Moving { ref path, step_index } = self.state {
+                if let RobotState::Moving {
+                    ref path,
+                    step_index,
+                } = self.state
+                {
                     if path[step_index..].iter().any(|(p, _)| *p == obs) {
                         path_blocked = true;
                     }
@@ -207,14 +220,19 @@ impl RobotActor {
                 FleetMessage::Intent(m) => {
                     let applied = self.local_reservations.apply_peer_intent(env.sender_id, &m);
                     if applied {
-                        if let RobotState::Moving { ref path, step_index } = self.state {
+                        if let RobotState::Moving {
+                            ref path,
+                            step_index,
+                        } = self.state
+                        {
                             let remaining: Vec<(Pos, Tick)> = path[step_index..]
                                 .iter()
                                 .enumerate()
                                 .map(|(offset, (pos, _))| (*pos, self.current_tick + offset as u64))
                                 .collect();
 
-                            let conflicts = self.local_reservations.conflicts_with_peers(&remaining);
+                            let conflicts =
+                                self.local_reservations.conflicts_with_peers(&remaining);
                             for c in conflicts {
                                 if c.peer_id == env.sender_id {
                                     self.handle_detected_conflict(&c);
@@ -224,7 +242,9 @@ impl RobotActor {
                     }
                 }
                 FleetMessage::Conflict(m) => {
-                    if m.challenged_id == self.id && m.challenged_intent_seq == self.current_intent_seq {
+                    if m.challenged_id == self.id
+                        && m.challenged_intent_seq == self.current_intent_seq
+                    {
                         // Resolve challenger intent age authoritatively: prefer the stored
                         // peer intent record when versions match; fall back to the
                         // transmitted challenger_lamport; yield conservatively for
@@ -272,6 +292,13 @@ impl RobotActor {
                         self.local_wfg.remove_robot(env.sender_id);
                     }
                 }
+                FleetMessage::WaitEdge(m) => {
+                    if m.active {
+                        self.local_wfg.add_wait(m.waiter_id, m.blocking_id);
+                    } else {
+                        self.local_wfg.remove_edge(m.waiter_id, m.blocking_id);
+                    }
+                }
                 FleetMessage::TaskStatus(m) => {
                     self.known_tasks.insert(m.task_id, m);
                 }
@@ -284,9 +311,19 @@ impl RobotActor {
                         status: TaskState::Open,
                     });
 
-                    self.pending_auctions.entry(m.task_id).or_insert_with(|| {
-                        Auction::new(m.task_id, m.pickup, m.dropoff, self.current_tick, m.deadline_tick.saturating_sub(self.current_tick).max(1))
+                    let entry = self.pending_auctions.entry(m.task_id).or_insert_with(|| {
+                        Auction::new_with_auctioneer(
+                            m.task_id,
+                            m.pickup,
+                            m.dropoff,
+                            self.current_tick,
+                            m.deadline_tick.saturating_sub(self.current_tick).max(1),
+                            env.sender_id,
+                        )
                     });
+                    if env.sender_id < entry.auctioneer_id || entry.auctioneer_id == 0 {
+                        entry.auctioneer_id = env.sender_id;
+                    }
 
                     if self.state == RobotState::Idle && self.assigned_task.is_none() {
                         let cost = compute_bid_cost(
@@ -317,14 +354,32 @@ impl RobotActor {
                         task.assigned_to = Some(m.winner_id);
                         task.status = TaskState::Assigned;
                     }
-                    if m.winner_id == self.id && self.assigned_task.is_none() {
-                        if let Some(task) = self.known_tasks.get(&m.task_id).cloned() {
-                            self.assigned_task = Some((task.task_id, task.pickup, task.dropoff));
-                            self.state = RobotState::Planning {
-                                task_id: task.task_id,
-                                pickup: task.pickup,
-                                dropoff: task.dropoff,
-                            };
+                    if m.winner_id == self.id {
+                        if self.assigned_task.is_none() {
+                            if let Some(task) = self.known_tasks.get(&m.task_id).cloned() {
+                                self.assigned_task =
+                                    Some((task.task_id, task.pickup, task.dropoff));
+                                self.state = RobotState::Planning {
+                                    task_id: task.task_id,
+                                    pickup: task.pickup,
+                                    dropoff: task.dropoff,
+                                };
+                            }
+                        } else {
+                            if let Some(task) = self.known_tasks.get_mut(&m.task_id) {
+                                task.assigned_to = None;
+                                task.status = TaskState::Open;
+                            }
+                            if let Some(task) = self.known_tasks.get(&m.task_id).cloned() {
+                                self.send(FleetMessage::TaskStatus(task));
+                            }
+                        }
+                    } else if let Some((curr_task, _, _)) = self.assigned_task {
+                        if curr_task == m.task_id {
+                            self.assigned_task = None;
+                            self.local_reservations.release_own();
+                            self.local_wfg.remove_robot(self.id);
+                            self.state = RobotState::Idle;
                         }
                     }
                 }
@@ -378,9 +433,32 @@ impl RobotActor {
 
             for task in unassigned_tasks {
                 if !self.pending_auctions.contains_key(&task.task_id) {
-                    let mut auction = Auction::new(task.task_id, task.pickup, task.dropoff, self.current_tick, 2);
-                    let my_cost = compute_bid_cost(&self.auction_config, self.pos, self.battery, task.pickup, task.dropoff, 0.0, 0, Some(self.current_tick + 2), self.current_tick);
-                    auction.add_bid(self.id, &BidMsg { task_id: task.task_id, cost: my_cost });
+                    let mut auction = Auction::new_with_auctioneer(
+                        task.task_id,
+                        task.pickup,
+                        task.dropoff,
+                        self.current_tick,
+                        2,
+                        self.id,
+                    );
+                    let my_cost = compute_bid_cost(
+                        &self.auction_config,
+                        self.pos,
+                        self.battery,
+                        task.pickup,
+                        task.dropoff,
+                        0.0,
+                        0,
+                        Some(self.current_tick + 2),
+                        self.current_tick,
+                    );
+                    auction.add_bid(
+                        self.id,
+                        &BidMsg {
+                            task_id: task.task_id,
+                            cost: my_cost,
+                        },
+                    );
                     self.pending_auctions.insert(task.task_id, auction);
 
                     self.send(FleetMessage::AuctionOpen(AuctionOpenMsg {
@@ -403,6 +481,14 @@ impl RobotActor {
 
         for task_id in auction_ids {
             if let Some(auction) = self.pending_auctions.get(&task_id) {
+                // Only the designated auctioneer resolves and awards the task
+                if auction.auctioneer_id != self.id && auction.auctioneer_id != 0 {
+                    if self.current_tick > auction.deadline + 10 {
+                        unawarded_expired.push(task_id);
+                    }
+                    continue;
+                }
+
                 if auction.is_closed(self.current_tick) {
                     let mut valid_bids = auction.bids.clone();
                     valid_bids.retain(|b| !already_assigned_winners.contains(&b.bidder_id));
@@ -441,6 +527,7 @@ impl RobotActor {
             if award.winner_id == self.id && self.assigned_task.is_none() {
                 if let Some(task) = self.known_tasks.get(&award.task_id).cloned() {
                     self.assigned_task = Some((task.task_id, task.pickup, task.dropoff));
+                    self.carrying_task = None;
                     self.state = RobotState::Planning {
                         task_id: task.task_id,
                         pickup: task.pickup,
@@ -457,8 +544,17 @@ impl RobotActor {
                 self.desired_next_pos = None;
             }
             RobotState::Bidding { .. } => {}
-            RobotState::Planning { task_id, pickup, dropoff } => {
-                let goal = if self.pos == pickup { dropoff } else { pickup };
+            RobotState::Planning {
+                task_id,
+                pickup,
+                dropoff,
+            } => {
+                let goal = if self.carrying_task == Some(task_id) || self.pos == pickup {
+                    self.carrying_task = Some(task_id);
+                    dropoff
+                } else {
+                    pickup
+                };
                 let mut planning_grid = (*self.grid).clone();
                 for obs in &self.local_obstacles {
                     if planning_grid.in_bounds(*obs) {
@@ -472,11 +568,12 @@ impl RobotActor {
                     100,
                 );
 
-                if let Some(path) = plan(
+                if let Some(path) = plan_with_orientation(
                     &planning_grid,
                     self.id,
                     self.pos,
                     self.current_tick,
+                    self.orientation,
                     goal,
                     &constraints,
                     200,
@@ -503,7 +600,14 @@ impl RobotActor {
                     let conflicts = self.local_reservations.conflicts_with_peers(&path);
                     let mut must_yield = false;
                     for c in conflicts {
-                        if should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, c.peer_id, c.peer_priority, c.peer_lamport) {
+                        if should_yield_lamport(
+                            self.id,
+                            self.current_intent_priority,
+                            self.current_intent_lamport,
+                            c.peer_id,
+                            c.peer_priority,
+                            c.peer_lamport,
+                        ) {
                             must_yield = true;
                             self.send(FleetMessage::Yield(YieldMsg {
                                 yielded_intent_seq: self.current_intent_seq,
@@ -516,10 +620,17 @@ impl RobotActor {
                     }
 
                     if must_yield {
-                        self.state = RobotState::Replanning { task_id, pickup, dropoff };
+                        self.state = RobotState::Replanning {
+                            task_id,
+                            pickup,
+                            dropoff,
+                        };
                     } else {
                         self.plan_fail_count = 0;
-                        self.state = RobotState::Moving { path, step_index: 0 };
+                        self.state = RobotState::Moving {
+                            path,
+                            step_index: 0,
+                        };
                     }
                 } else {
                     self.plan_fail_count += 1;
@@ -532,6 +643,7 @@ impl RobotActor {
                             self.send(FleetMessage::TaskStatus(task));
                         }
                         self.assigned_task = None;
+                        self.carrying_task = None;
                         self.state = RobotState::Idle;
                         self.plan_fail_count = 0;
                     }
@@ -542,10 +654,16 @@ impl RobotActor {
                     // Reached intermediate or final goal
                     if let Some((task_id, pickup, dropoff)) = self.assigned_task {
                         if self.pos == pickup {
-                            self.state = RobotState::Planning { task_id, pickup, dropoff };
+                            self.carrying_task = Some(task_id);
+                            self.state = RobotState::Planning {
+                                task_id,
+                                pickup,
+                                dropoff,
+                            };
                         } else if self.pos == dropoff {
                             self.state = RobotState::Idle;
                             self.assigned_task = None;
+                            self.carrying_task = None;
                             self.local_reservations.release_own();
                             if let Some(task) = self.known_tasks.get_mut(&task_id) {
                                 task.status = TaskState::Completed;
@@ -556,6 +674,7 @@ impl RobotActor {
                         }
                     } else {
                         self.state = RobotState::Idle;
+                        self.carrying_task = None;
                     }
                     self.desired_next_pos = None;
                 } else {
@@ -564,14 +683,19 @@ impl RobotActor {
 
                     if self.local_obstacles.contains(&next_pos) {
                         if let Some((task_id, pickup, dropoff)) = self.assigned_task {
-                            self.state = RobotState::Replanning { task_id, pickup, dropoff };
+                            self.state = RobotState::Replanning {
+                                task_id,
+                                pickup,
+                                dropoff,
+                            };
                         }
                         self.desired_next_pos = None;
                     } else {
                         // 1. PHYSICAL OCCUPANCY: Check known physical positions
-                        let occupied_now = self.peer_poses.iter().any(|(&p_id, &(p_pos, _))| {
-                            p_id != self.id && p_pos == next_pos
-                        });
+                        let occupied_now = self
+                            .peer_poses
+                            .iter()
+                            .any(|(&p_id, &(p_pos, _))| p_id != self.id && p_pos == next_pos);
 
                         // 2. CONVERGENCE & REAL-TIME ESTIMATION with priority arbitration
                         let mut must_yield_next_step = false;
@@ -580,18 +704,37 @@ impl RobotActor {
                                 continue;
                             }
 
-                            // Estimate peer's current real-time position factoring in 1-tick delay
-                            let (peer_curr_pos, peer_next_step) = if let Some(&(p_msg_pos, p_msg_tick)) = self.peer_poses.get(&peer.robot_id) {
-                                if let Some(idx) = peer.path.iter().position(|&(p, _)| p == p_msg_pos) {
-                                    let elapsed = (self.current_tick.saturating_sub(p_msg_tick)) as usize;
-                                    let curr = peer.path.get(idx + elapsed).map(|&(p, _)| p).unwrap_or(p_msg_pos);
-                                    let next = peer.path.get(idx + elapsed + 1).map(|&(p, _)| p);
-                                    (curr, next)
-                                } else {
-                                    (p_msg_pos, None)
+                            // Lookup peer's planned position at current_tick and next_tick directly by timestamp
+                            let (peer_curr_pos, peer_next_step) = {
+                                let curr_p = peer
+                                    .path
+                                    .iter()
+                                    .find(|(_, t)| *t == self.current_tick)
+                                    .map(|(p, _)| *p);
+                                let next_p = peer
+                                    .path
+                                    .iter()
+                                    .find(|(_, t)| *t == next_tick)
+                                    .map(|(p, _)| *p);
+                                match (curr_p, next_p) {
+                                    (Some(curr), next) => (curr, next),
+                                    (None, Some(next)) => (
+                                        self.peer_poses
+                                            .get(&peer.robot_id)
+                                            .map(|&(p, _)| p)
+                                            .unwrap_or(next),
+                                        Some(next),
+                                    ),
+                                    (None, None) => {
+                                        if let Some(&(p_msg_pos, _)) =
+                                            self.peer_poses.get(&peer.robot_id)
+                                        {
+                                            (p_msg_pos, None)
+                                        } else {
+                                            continue;
+                                        }
+                                    }
                                 }
-                            } else {
-                                continue;
                             };
 
                             // If peer is currently occupying next_pos
@@ -602,11 +745,30 @@ impl RobotActor {
 
                             // If peer is moving into next_pos at next tick
                             if let Some(p_next) = peer_next_step {
-                                if p_next == next_pos && should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, peer.robot_id, peer.priority, peer.lamport_ts) {
+                                if p_next == next_pos
+                                    && should_yield_lamport(
+                                        self.id,
+                                        self.current_intent_priority,
+                                        self.current_intent_lamport,
+                                        peer.robot_id,
+                                        peer.priority,
+                                        peer.lamport_ts,
+                                    )
+                                {
                                     must_yield_next_step = true;
                                     break;
                                 }
-                                if p_next == self.pos && peer_curr_pos == next_pos && should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, peer.robot_id, peer.priority, peer.lamport_ts) {
+                                if p_next == self.pos
+                                    && peer_curr_pos == next_pos
+                                    && should_yield_lamport(
+                                        self.id,
+                                        self.current_intent_priority,
+                                        self.current_intent_lamport,
+                                        peer.robot_id,
+                                        peer.priority,
+                                        peer.lamport_ts,
+                                    )
+                                {
                                     must_yield_next_step = true;
                                     break;
                                 }
@@ -615,7 +777,11 @@ impl RobotActor {
 
                         if occupied_now || must_yield_next_step {
                             if let Some((task_id, pickup, dropoff)) = self.assigned_task {
-                                self.state = RobotState::Replanning { task_id, pickup, dropoff };
+                                self.state = RobotState::Replanning {
+                                    task_id,
+                                    pickup,
+                                    dropoff,
+                                };
                             }
                             self.desired_next_pos = None;
                         } else {
@@ -625,15 +791,41 @@ impl RobotActor {
                                 .map(|(offset, (pos, _))| (*pos, next_tick + offset as u64))
                                 .collect();
 
-                            let conflicts = self.local_reservations.conflicts_with_peers(&remaining);
+                            let conflicts =
+                                self.local_reservations.conflicts_with_peers(&remaining);
                             if !conflicts.is_empty() {
                                 let c = &conflicts[0];
-                                if should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, c.peer_id, c.peer_priority, c.peer_lamport) {
+                                if should_yield_lamport(
+                                    self.id,
+                                    self.current_intent_priority,
+                                    self.current_intent_lamport,
+                                    c.peer_id,
+                                    c.peer_priority,
+                                    c.peer_lamport,
+                                ) {
                                     self.local_wfg.add_wait(self.id, c.peer_id);
+                                    self.send(FleetMessage::WaitEdge(WaitEdgeMsg {
+                                        waiter_id: self.id,
+                                        blocking_id: c.peer_id,
+                                        tick: self.current_tick,
+                                        active: true,
+                                    }));
                                     let deadlocks = resolve_deadlocks(&self.local_wfg);
                                     if deadlocks.contains(&self.id) {
-                                        if let Some((task_id, pickup, dropoff)) = self.assigned_task {
-                                            self.state = RobotState::Replanning { task_id, pickup, dropoff };
+                                        self.send(FleetMessage::WaitEdge(WaitEdgeMsg {
+                                            waiter_id: self.id,
+                                            blocking_id: c.peer_id,
+                                            tick: self.current_tick,
+                                            active: false,
+                                        }));
+                                        self.local_wfg.remove_edge(self.id, c.peer_id);
+                                        if let Some((task_id, pickup, dropoff)) = self.assigned_task
+                                        {
+                                            self.state = RobotState::Replanning {
+                                                task_id,
+                                                pickup,
+                                                dropoff,
+                                            };
                                         }
                                     }
                                     self.desired_next_pos = None;
@@ -658,13 +850,26 @@ impl RobotActor {
             }
             RobotState::Yielding { .. } => {
                 if let Some((task_id, pickup, dropoff)) = self.assigned_task {
-                    self.state = RobotState::Replanning { task_id, pickup, dropoff };
+                    self.state = RobotState::Replanning {
+                        task_id,
+                        pickup,
+                        dropoff,
+                    };
                 }
                 self.desired_next_pos = None;
             }
-            RobotState::Replanning { task_id, pickup, dropoff } => {
+            RobotState::Replanning {
+                task_id,
+                pickup,
+                dropoff,
+            } => {
                 self.local_reservations.release_own();
-                self.state = RobotState::Planning { task_id, pickup, dropoff };
+                self.local_wfg.remove_robot(self.id);
+                self.state = RobotState::Planning {
+                    task_id,
+                    pickup,
+                    dropoff,
+                };
                 self.desired_next_pos = None;
             }
             RobotState::Dead => {
@@ -693,7 +898,7 @@ impl RobotActor {
             tick: self.current_tick,
             battery: self.battery,
             status,
-            orientation: None,
+            orientation: Some(self.orientation),
         }));
 
         // 2g. Battery consumption
@@ -707,7 +912,14 @@ impl RobotActor {
     }
 
     fn handle_detected_conflict(&mut self, conflict: &crate::planner::PeerConflict) {
-        if should_yield_lamport(self.id, self.current_intent_priority, self.current_intent_lamport, conflict.peer_id, conflict.peer_priority, conflict.peer_lamport) {
+        if should_yield_lamport(
+            self.id,
+            self.current_intent_priority,
+            self.current_intent_lamport,
+            conflict.peer_id,
+            conflict.peer_priority,
+            conflict.peer_lamport,
+        ) {
             self.send(FleetMessage::Yield(YieldMsg {
                 yielded_intent_seq: self.current_intent_seq,
                 to_robot: conflict.peer_id,
@@ -715,7 +927,11 @@ impl RobotActor {
                 conflicting_tick: conflict.tick,
             }));
             if let Some((task_id, pickup, dropoff)) = self.assigned_task {
-                self.state = RobotState::Replanning { task_id, pickup, dropoff };
+                self.state = RobotState::Replanning {
+                    task_id,
+                    pickup,
+                    dropoff,
+                };
             }
         } else {
             self.send(FleetMessage::Conflict(ConflictMsg {
@@ -734,8 +950,14 @@ impl RobotActor {
     pub fn commit_movement(&mut self) -> (Pos, Option<Pos>) {
         let prev = self.pos;
         if let Some(next) = self.desired_next_pos.take() {
+            if let Some(new_orient) = orientation_between(self.pos, next) {
+                self.orientation = new_orient;
+            }
             self.pos = next;
-            if let RobotState::Moving { ref mut step_index, .. } = self.state {
+            if let RobotState::Moving {
+                ref mut step_index, ..
+            } = self.state
+            {
                 *step_index += 1;
             }
             (prev, Some(next))
@@ -746,9 +968,10 @@ impl RobotActor {
 
     fn update_telemetry(&self, status: RobotStatus) {
         let path = match self.state {
-            RobotState::Moving { ref path, step_index } => {
-                path[step_index..].iter().map(|(p, _)| *p).collect()
-            }
+            RobotState::Moving {
+                ref path,
+                step_index,
+            } => path[step_index..].iter().map(|(p, _)| *p).collect(),
             _ => Vec::new(),
         };
         let task = self.assigned_task.map(|(t, _, _)| t);
@@ -760,6 +983,7 @@ impl RobotActor {
             status,
             path,
             task,
+            orientation: Some(self.orientation),
         });
     }
 }
