@@ -812,7 +812,8 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             });
         }
 
-        const ws = new WebSocket(`ws://${location.host}/ws`);
+        const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${wsProto}//${location.host}/ws`);
         ws.onmessage = (e) => {
             const frame = JSON.parse(e.data);
             document.getElementById('tick-val').innerText = frame.tick;
