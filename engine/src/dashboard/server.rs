@@ -158,8 +158,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <body>
     <div id="sidebar">
         <div>
-            <div style="font-size: 14px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">THADAM P2P MESH</div>
-            <div style="font-size: 10px; color: #71717a; letter-spacing: 0.3px;">TRAJECTORY-AWARE HEURISTICS FOR AUTONOMOUS DECENTRALIZED AMR MESH</div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div style="font-size: 14px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">THADAM P2P MESH</div>
+                <span id="mesh-status" style="font-size: 9px; padding: 2px 7px; border-radius: 9999px; background: #1c1917; color: #fbbf24; border: 1px solid #d97706; font-weight: 700; letter-spacing: 0.5px;">CONNECTING</span>
+            </div>
+            <div style="font-size: 10px; color: #71717a; letter-spacing: 0.3px; margin-top: 2px;">TRAJECTORY-AWARE HEURISTICS FOR AUTONOMOUS DECENTRALIZED AMR MESH</div>
         </div>
 
         <div class="card">
@@ -426,6 +429,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 if (latestFrame) renderThreeFrame(latestFrame);
                 e.preventDefault();
             }, { passive: false });
+
+            updateThreeCamera();
+            threeRenderer.render(threeScene, threeCamera);
 
             return true;
         }
@@ -812,14 +818,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             });
         }
 
-        const ws = new WebSocket(`ws://${location.host}/ws`);
-        ws.onmessage = (e) => {
-            const frame = JSON.parse(e.data);
-            document.getElementById('tick-val').innerText = frame.tick;
-            document.getElementById('tasks-done').innerText = frame.completed_count;
-            document.getElementById('collisions-val').innerText = frame.collisions;
-            document.getElementById('robot-count').innerText = frame.robots.length;
-
+        function drawBaseGrid() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             // Draw Warehouse Zones
@@ -848,6 +847,27 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 ctx.lineTo(canvas.width, i * cellSize);
                 ctx.stroke();
             }
+        }
+
+        let ws = null;
+        let reconnectTimer = null;
+
+        function updateMeshStatus(text, bg, fg, border) {
+            const el = document.getElementById('mesh-status');
+            if (!el) return;
+            el.innerText = text;
+            el.style.background = bg;
+            el.style.color = fg;
+            el.style.borderColor = border;
+        }
+
+        function handleMeshFrame(frame) {
+            document.getElementById('tick-val').innerText = frame.tick;
+            document.getElementById('tasks-done').innerText = frame.completed_count;
+            document.getElementById('collisions-val').innerText = frame.collisions;
+            document.getElementById('robot-count').innerText = frame.robots.length;
+
+            drawBaseGrid();
 
             // Draw Static Shelves
             ctx.fillStyle = '#27272a';
@@ -989,7 +1009,61 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     renderIsoFrame(frame);
                 }
             }
-        };
+        }
+
+        function connectWebSocket() {
+            if (ws) {
+                try { ws.close(); } catch (_) {}
+            }
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${proto}//${location.host}/ws`;
+            updateMeshStatus('CONNECTING', '#1c1917', '#fbbf24', '#d97706');
+
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (err) {
+                console.error('WebSocket connection initialization failed:', err);
+                scheduleWsReconnect();
+                return;
+            }
+
+            ws.onopen = () => {
+                console.log('Connected to THADAM live telemetry stream at ' + wsUrl);
+                updateMeshStatus(proto === 'wss:' ? 'LIVE (WSS)' : 'LIVE (WS)', '#064e3b', '#34d399', '#059669');
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+            };
+
+            ws.onmessage = (e) => {
+                try {
+                    const frame = JSON.parse(e.data);
+                    handleMeshFrame(frame);
+                } catch (err) {
+                    console.error('Error parsing telemetry frame:', err);
+                }
+            };
+
+            ws.onclose = () => {
+                updateMeshStatus('RECONNECTING', '#450a0a', '#f87171', '#dc2626');
+                scheduleWsReconnect();
+            };
+
+            ws.onerror = (err) => {
+                console.warn('WebSocket error encountered:', err);
+                try { ws.close(); } catch (_) {}
+            };
+        }
+
+        function scheduleWsReconnect() {
+            if (!reconnectTimer) {
+                reconnectTimer = setTimeout(() => {
+                    reconnectTimer = null;
+                    connectWebSocket();
+                }, 1200);
+            }
+        }
 
         canvas.addEventListener('click', (e) => {
             const rect = canvas.getBoundingClientRect();
@@ -1044,6 +1118,10 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 body: JSON.stringify({ delay_ms: parseInt(val) })
             });
         }
+
+        // Render immediate baseline warehouse topology before WebSocket frames arrive
+        drawBaseGrid();
+        connectWebSocket();
     </script>
 </body>
 </html>
