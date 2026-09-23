@@ -199,55 +199,17 @@ Detailed hardware wiring pinouts, serial protocol definitions, and architecture 
 
 ---
 
-## 7. Project Structure
+## 7. Team Innovation Igniters
 
-```
-SIH26123/
-+-- Dockerfile                    # Multi-stage container build
-+-- docker-compose.yml            # Docker Compose service definition
-+-- Makefile                      # Single-command build and run workflows
-+-- README.md                     # Comprehensive project documentation
-+-- docs/                         # Architecture specifications and diagrams
-|   +-- ARCHITECTURE.md           # Definitive system architecture & hardware HIL specification
-|   +-- diagrams/                 # Architecture SVG diagrams
-+-- scripts/
-|   +-- hil_serial_mock.py        # Hardware-in-the-Loop serial telemetry mock & jitter tester
-|   +-- demo_matplotlib.py        # Standalone Python Matplotlib animated visualizer
-+-- engine/                       # Main Rust crate (distributed engine & simulator)
-    +-- Cargo.toml
-    +-- src/
-    |   +-- lib.rs                # Library exports
-    |   +-- main.rs               # CLI entry point (sim, bench, dashboard)
-    |   +-- world/                # GridMap, Pos, Cell representations
-    |   +-- protocol/             # Envelopes, Heartbeats, Intents, Bids, Conflicts, Lamport Clocks
-    |   +-- planner/              # Space-Time A*, Reservation Table, Turn-Delay Cost Matrix
-    |   +-- negotiator/           # Wait-For-Graph, Cycle Detection, Priority Arbitration
-    |   +-- auction/              # Contract Net Protocol, Multi-Factor Bidding
-    |   +-- network/              # InMemoryBus, FaultyNetwork, UdpMulticastTransport, FEC
-    |   +-- node/                 # RobotActor, State Machine, Telemetry, Sensing
-    |   +-- sim/                  # 5-Phase Synchronous Simulation Runner
-    |   +-- baseline/             # Centralized Conflict-Based Search (CBS) baseline
-    |   +-- metrics/              # Metrics Collector & Comparative Benchmark Engine
-    |   +-- dashboard/            # Axum WebSocket server & Three.js WebGL Digital Twin
-    +-- tests/                    # 14 integration test suites (60 passing tests)
-        +-- auction_tests.rs
-        +-- baseline_tests.rs
-        +-- chaos_tests.rs
-        +-- deadlock_tests.rs
-        +-- dedup_and_staleness_tests.rs
-        +-- full_validation.rs
-        +-- kinematics_tests.rs
-        +-- lamport_tests.rs
-        +-- metrics_tests.rs
-        +-- network_fault_tests.rs
-        +-- network_tests.rs
-        +-- planner_tests.rs
-        +-- scenario_tests.rs
-        +-- simulation_tests.rs
-```
+* Ashish S
+* Sanjeev kumar S
+* Kamlesh Y
+* Prajan SS
+* Sangamithra B
+* Sudhishna P
 
 ---
 
 ## 8. License & Attribution
 
-Developed for the **Smart India Hackathon (SIH) 2026** under the **Bharat Electronics Limited (BEL)** Problem Statement: *Edge-AI Based Distributed Fleet Coordination for Autonomous Mobile Robots (AMRs) in Smart Warehouses*.
+Developed for the **Smart India Hackathon (SIH) 2026** by Team **Innovation Igniters**. under the **Bharat Electronics Limited (BEL)** Problem Statement (26123): *Edge-AI Based Distributed Fleet Coordination for Autonomous Mobile Robots (AMRs) in Smart Warehouses*.
