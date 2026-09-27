@@ -557,6 +557,9 @@ impl RobotActor {
                 dead_peers.push(peer);
             }
         }
+        // Deterministic: last_heartbeats is a HashMap (platform-random
+        // iteration order); sort so multi-peer re-auction is reproducible.
+        dead_peers.sort();
 
         let mut tasks_to_reauction = Vec::new();
         for peer in dead_peers {
@@ -567,11 +570,17 @@ impl RobotActor {
             self.local_wfg.remove_robot(peer);
             self.last_heartbeats.remove(&peer);
 
-            for task in self.known_tasks.values_mut() {
-                if task.assigned_to == Some(peer) && task.status == TaskState::InProgress {
-                    task.status = TaskState::Reassigned;
-                    task.assigned_to = None;
-                    tasks_to_reauction.push(task.clone());
+            // Deterministic: known_tasks is a HashMap; iterate by sorted
+            // task_id so re-auction ordering is reproducible across runs.
+            let mut task_ids: Vec<TaskId> = self.known_tasks.keys().copied().collect();
+            task_ids.sort();
+            for task_id in task_ids {
+                if let Some(task) = self.known_tasks.get_mut(&task_id) {
+                    if task.assigned_to == Some(peer) && task.status == TaskState::InProgress {
+                        task.status = TaskState::Reassigned;
+                        task.assigned_to = None;
+                        tasks_to_reauction.push(task.clone());
+                    }
                 }
             }
         }
@@ -588,12 +597,24 @@ impl RobotActor {
 
         // 2c. If Idle and unassigned, check for unassigned open tasks and open auctions
         if self.state == RobotState::Idle && self.assigned_task.is_none() {
-            let unassigned_tasks: Vec<TaskStatusMsg> = self
-                .known_tasks
-                .values()
-                .filter(|t| t.status == TaskState::Open || t.status == TaskState::Reassigned)
-                .cloned()
-                .collect();
+            // Deterministic: known_tasks is a HashMap (platform-random iteration
+            // order); open auctions in sorted task_id order so auction messages,
+            // outstanding-bid ring slots, and bandit learning signals are
+            // reproducible across processes and machines.
+            let mut unassigned_task_ids: Vec<TaskId> =
+                self.known_tasks.keys().copied().collect();
+            unassigned_task_ids.sort();
+            let unassigned_tasks: Vec<TaskStatusMsg> = {
+                let mut out = Vec::new();
+                for task_id in unassigned_task_ids {
+                    if let Some(t) = self.known_tasks.get(&task_id) {
+                        if t.status == TaskState::Open || t.status == TaskState::Reassigned {
+                            out.push(t.clone());
+                        }
+                    }
+                }
+                out
+            };
 
             for task in unassigned_tasks {
                 if !self.pending_auctions.contains_key(&task.task_id) {

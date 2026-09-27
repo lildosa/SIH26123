@@ -102,7 +102,13 @@ impl ReservationTable {
             return conflicts;
         }
 
-        for peer in self.peer_intents.values() {
+        // Deterministic: peer_intents is a HashMap (platform-random iteration
+        // order); sort by robot_id so the first conflict reported (and thus
+        // Lamport arbitration) is reproducible across processes and machines.
+        let mut peers: Vec<IntentRecord> = self.peer_intents.values().cloned().collect();
+        peers.sort_by(|a, b| a.robot_id.cmp(&b.robot_id));
+
+        for peer in peers {
             // 1. Vertex conflicts
             for (c_pos, c_tick) in candidate_path {
                 for (p_pos, p_tick) in &peer.path {

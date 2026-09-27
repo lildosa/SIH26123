@@ -49,7 +49,11 @@ impl WaitForGraph {
         let mut on_stack = HashSet::new();
         let mut path = Vec::new();
 
-        let all_nodes: Vec<RobotId> = self.edges.keys().copied().collect();
+        let mut all_nodes: Vec<RobotId> = self.edges.keys().copied().collect();
+        // Deterministic: edges is a HashMap (platform-random iteration order) —
+        // sort both DFS start order and neighbor order so the detected cycle
+        // set is reproducible across processes and machines.
+        all_nodes.sort();
 
         for node in all_nodes {
             if !visited.contains(&node) {
@@ -97,7 +101,9 @@ impl WaitForGraph {
         path.push(curr);
 
         if let Some(neighbors) = self.edges.get(&curr) {
-            for &next in neighbors {
+            let mut ordered: Vec<RobotId> = neighbors.iter().copied().collect();
+            ordered.sort();
+            for next in ordered {
                 if on_stack.contains(&next) {
                     // Cycle detected from `next` to `curr` in `path`
                     if let Some(pos) = path.iter().position(|&x| x == next) {
