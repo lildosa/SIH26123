@@ -48,10 +48,10 @@ cargo run --release -- sim --robots 8 --width 32 --height 32 --tasks 10 \n  --ne
 cargo run --release -- batch --robots 4,6,8 --sizes 15,24,32 --seeds 10 \n  --configs static,learned,neural,full,auto,autofull | python3 ../scripts/aggregate_stats.py
 ```
 
-· Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn) 
-· Training pipeline: [`scripts/train_guidance_model.py`](scripts/train_guidance_model.py) 
-· Deep dive: [`docs/ARCHITECTURE.md §3.4`](docs/ARCHITECTURE.md) 
-· Engine-side inference: [`engine/src/ai/guidance.rs`](engine/src/ai/guidance.rs)
+- Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn) 
+- Training pipeline: [`scripts/train_guidance_model.py`](scripts/train_guidance_model.py) 
+- Deep dive: [`docs/ARCHITECTURE.md §3.4`](docs/ARCHITECTURE.md) 
+- Engine-side inference: [`engine/src/ai/guidance.rs`](engine/src/ai/guidance.rs)
 
 ---
 
