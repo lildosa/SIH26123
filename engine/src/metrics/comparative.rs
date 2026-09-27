@@ -1,4 +1,4 @@
-use crate::baseline::{CentralizedConfig, CentralizedRunner};
+use crate::baseline::{CentralizedConfig, CentralizedRunner, StopAndWaitConfig, StopAndWaitRunner};
 use crate::sim::{SimConfig, SimRunner};
 use crate::world::{GridMap, Pos};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,16 @@ pub struct BenchmarkRow {
     pub centralized_makespan: u64,
     pub centralized_collisions: usize,
     pub distributed_throughput_ratio: f64,
+    /// Stop-and-wait baseline (SIH reference behavior) makespan for the same
+    /// scenario, and the fractional completion-time reduction of the
+    /// distributed engine over it ("Thadam makespan - SAW makespan" relative
+    /// to SAW; positive = Thadam faster).
+    #[serde(default)]
+    pub stop_wait_makespan: u64,
+    #[serde(default)]
+    pub stop_wait_collisions: usize,
+    #[serde(default)]
+    pub stop_wait_reduction: f64,
     /// Open-set expansions across all distributed-space-time-A* plans.
     #[serde(default)]
     pub distributed_plan_expansions: usize,
@@ -129,7 +139,7 @@ impl ComparativeBenchmark {
                 grid_height: self.grid_height,
                 aisle_spacing: 3,
                 tasks: tasks.clone(),
-                max_ticks: 300,
+                max_ticks: 2000,
                 kill_robot_at: None,
                 block_cell_at: None,
                 start_positions: starts.clone(),
@@ -141,14 +151,27 @@ impl ComparativeBenchmark {
             let mut dist_runner = SimRunner::new(dist_config);
             let dist_res = dist_runner.run().await;
 
-            // 2. Run Centralized Baseline
+            // 2. Run Stop-and-Wait Baseline (SIH reference behavior)
+            let saw_config = StopAndWaitConfig {
+                num_robots: n_robots,
+                grid_width: self.grid_width,
+                grid_height: self.grid_height,
+                aisle_spacing: 3,
+                tasks: tasks.clone(),
+                max_ticks: 2000,
+                start_positions: starts.clone(),
+            };
+            let saw_runner = StopAndWaitRunner::new(saw_config);
+            let saw_res = saw_runner.run();
+
+            // 3. Run Centralized Baseline
             let cent_config = CentralizedConfig {
                 num_robots: n_robots,
                 grid_width: self.grid_width,
                 grid_height: self.grid_height,
                 aisle_spacing: 3,
                 tasks: tasks.clone(),
-                max_ticks: 300,
+                max_ticks: 2000,
                 start_positions: starts,
             };
             let cent_runner = CentralizedRunner::new(cent_config);
@@ -160,6 +183,13 @@ impl ComparativeBenchmark {
                 1.0
             };
 
+            let saw_reduction = if saw_res.makespan > 0 {
+                (saw_res.makespan as f64 - dist_res.makespan.max(1) as f64)
+                    / saw_res.makespan as f64
+            } else {
+                0.0
+            };
+
             results.push(BenchmarkRow {
                 num_robots: n_robots,
                 num_tasks: self.num_tasks,
@@ -167,6 +197,9 @@ impl ComparativeBenchmark {
                 distributed_collisions: dist_res.collisions,
                 centralized_makespan: cent_res.makespan,
                 centralized_collisions: cent_res.collisions,
+                stop_wait_makespan: saw_res.makespan,
+                stop_wait_collisions: saw_res.collisions,
+                stop_wait_reduction: saw_reduction,
                 distributed_throughput_ratio: ratio,
                 distributed_plan_expansions: dist_res.plan_expansions,
                 guided_plan_expansions: dist_res.guided_plan_expansions,
