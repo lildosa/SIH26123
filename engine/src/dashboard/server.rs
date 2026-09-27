@@ -1,16 +1,16 @@
-use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-    },
-    response::Html,
-    routing::{get, post},
-    Json, Router,
-};
 use crate::node::actor::RobotTelemetry;
 use crate::protocol::{RobotId, TaskStatusMsg, Tick};
 use crate::sim::SimEnvironment;
 use crate::world::{Cell, GridMap, Pos};
+use axum::{
+    Json, Router,
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    response::Html,
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -32,8 +32,14 @@ pub enum ControlCommand {
     KillRobot(RobotId),
     ReviveRobot(RobotId),
     SpawnTask,
-    CustomTask { pickup: Pos, dropoff: Pos },
-    ManualDispatch { robot_id: RobotId, target: Pos },
+    CustomTask {
+        pickup: Pos,
+        dropoff: Pos,
+    },
+    ManualDispatch {
+        robot_id: RobotId,
+        target: Pos,
+    },
     LoadScenario(usize),
     SetFleetSize(usize),
     SetSpeed(u64),
@@ -41,6 +47,10 @@ pub enum ControlCommand {
     ResetSim,
     /// Live chaos injection: simulated packet-loss rate 0.0 - 0.5.
     SetPacketLoss(f64),
+    /// Live Edge-AI toggle: false = deterministic (pure kinematic planner +
+    /// static auction weights), true = model-assisted (neural A* guidance +
+    /// LinUCB adaptive bids). Applied to the whole live fleet immediately.
+    SetAiMode(bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +62,9 @@ pub struct DashboardFrame {
     pub tasks: Vec<TaskStatusMsg>,
     pub completed_count: usize,
     pub collisions: usize,
+    /// Current Edge-AI mode (mirrors the operator toggle).
+    #[serde(default)]
+    pub ai_enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -100,6 +113,11 @@ pub struct PacketLossReq {
     pub loss_rate: f64,
 }
 
+#[derive(Deserialize)]
+pub struct AiModeReq {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkComparison {
     pub centralized_cbs_makespan: u64,
@@ -118,183 +136,176 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     <title>THADAM — Autonomous Decentralized AMR Mesh Console</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-        body { background: #111215; color: #e4e4e7; display: flex; height: 100vh; overflow: hidden; }
-        #sidebar { width: 400px; background: #18191e; border-right: 1px solid #27272a; padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-        #main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; position: relative; background: #0c0d0e; }
-        canvas { background: #14151a; border: 1px solid #3f3f46; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.8); cursor: crosshair; }
-        .card { background: #1e1f26; border: 1px solid #2e2f38; border-radius: 4px; padding: 12px; }
-        .card-header { color: #a1a1aa; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
-        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .stat-box { background: #14151a; padding: 8px 10px; border-radius: 4px; border: 1px solid #27272a; }
-        .stat-label { font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
-        .stat-val { font-size: 18px; font-weight: 700; color: #f4f4f5; margin-top: 2px; }
+        body { background: #0e0f12; color: #e4e4e7; display: flex; height: 100vh; overflow: hidden; }
+        #sidebar { width: 480px; background: #16171d; border-right: 1px solid #27272a; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+        #sidebar::-webkit-scrollbar { width: 6px; }
+        #sidebar::-webkit-scrollbar-track { background: #16171d; }
+        #sidebar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+        #main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; position: relative; background: #090a0d; }
+        canvas { background: #14151a; border: 1px solid #3f3f46; border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,0.85); cursor: crosshair; }
+        .card { background: #1a1b22; border: 1px solid #2e2f3a; border-radius: 6px; padding: 12px 14px; }
+        .card-header { color: #d4d4d8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+        .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+        .stat-box { background: #111216; padding: 10px 12px; border-radius: 5px; border: 1px solid #27272a; }
+        .stat-label { font-size: 11px; color: #a1a1aa; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-val { font-size: 20px; font-weight: 800; color: #f4f4f5; margin-top: 3px; }
         .stat-val-green { color: #10b981; }
         .stat-val-amber { color: #f59e0b; }
-        .robot-item { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #27272a; font-size: 11px; }
-        .badge { padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
-        .badge-moving { background: #27272a; color: #38bdf8; border: 1px solid #38bdf8; }
-        .badge-idle { background: #27272a; color: #71717a; border: 1px solid #3f3f46; }
-        .badge-planning { background: #27272a; color: #f59e0b; border: 1px solid #f59e0b; }
-        .badge-yielding { background: #27272a; color: #fb7185; border: 1px solid #fb7185; }
-        .badge-dead { background: #450a0a; color: #ef4444; border: 1px solid #ef4444; }
-        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-        .btn { background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46; padding: 7px 10px; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600; text-align: center; transition: all 0.1s; }
+        .robot-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #27272a; font-size: 12px; }
+        .badge { padding: 3px 7px; border-radius: 3px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+        .badge-moving { background: #182230; color: #38bdf8; border: 1px solid #0284c7; }
+        .badge-idle { background: #22232a; color: #a1a1aa; border: 1px solid #3f3f46; }
+        .badge-planning { background: #2a2012; color: #fbbf24; border: 1px solid #d97706; }
+        .badge-yielding { background: #2e151b; color: #fb7185; border: 1px solid #e11d48; }
+        .badge-dead { background: #3b0d0d; color: #fca5a5; border: 1px solid #ef4444; }
+        .btn { background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46; padding: 8px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; text-align: center; transition: all 0.12s ease; }
         .btn:hover { background: #3f3f46; color: #ffffff; }
         .btn:active { background: #18181b; }
-        .btn-danger { border-color: #7f1d1d; color: #f87171; }
-        .btn-danger:hover { background: #991b1b; color: #ffffff; }
-        .btn-restore { border-color: #065f46; color: #34d399; }
-        .btn-restore:hover { background: #047857; color: #ffffff; }
-        .tool-bar { display: flex; gap: 4px; margin-bottom: 8px; }
-        .tool-btn { flex: 1; padding: 7px 4px; font-size: 10px; font-weight: 700; border-radius: 3px; border: 1px solid #3f3f46; background: #14151a; color: #a1a1aa; cursor: pointer; text-align: center; text-transform: uppercase; }
-        .tool-btn.active { background: #f59e0b; color: #000000; border-color: #f59e0b; font-weight: 800; }
-        .slider-container { display: flex; align-items: center; gap: 8px; font-size: 10px; color: #71717a; text-transform: uppercase; }
-        .slider { flex: 1; accent-color: #f59e0b; cursor: pointer; }
-        .task-row { display: flex; justify-content: space-between; font-size: 10px; padding: 4px 0; border-bottom: 1px solid #27272a; color: #a1a1aa; }
-        .legend-bar { display: flex; gap: 14px; font-size: 11px; color: #71717a; margin-top: 8px; text-transform: uppercase; }
+        .btn-danger { border-color: #7f1d1d; color: #f87171; background: #221214; }
+        .btn-danger:hover { background: #991b1b; color: #ffffff; border-color: #ef4444; }
+        .btn-restore { border-color: #065f46; color: #34d399; background: #0d231a; }
+        .btn-restore:hover { background: #047857; color: #ffffff; border-color: #10b981; }
+        .tool-bar { display: flex; gap: 6px; margin-bottom: 8px; }
+        .tool-btn { flex: 1; padding: 8px 6px; font-size: 11px; font-weight: 700; border-radius: 4px; border: 1px solid #3f3f46; background: #111216; color: #a1a1aa; cursor: pointer; text-align: center; text-transform: uppercase; transition: all 0.15s ease; }
+        .tool-btn:hover { background: #27272a; color: #ffffff; }
+        .tool-btn.active { background: #f59e0b; color: #09090b; border-color: #f59e0b; font-weight: 800; }
+        .slider-row { display: flex; align-items: center; gap: 10px; }
+        .slider-title { font-size: 11px; font-weight: 600; color: #a1a1aa; text-transform: uppercase; width: 145px; flex-shrink: 0; }
+        .slider-readout { font-size: 12px; font-weight: 700; color: #38bdf8; min-width: 44px; text-align: right; }
+        .slider { flex: 1; height: 6px; accent-color: #f59e0b; cursor: pointer; }
+        .task-row { display: flex; justify-content: space-between; font-size: 11px; padding: 4px 0; border-bottom: 1px solid #27272a; color: #a1a1aa; }
+        .legend-bar { display: flex; gap: 18px; font-size: 12px; color: #a1a1aa; margin-top: 12px; text-transform: uppercase; font-weight: 600; }
+        #robot-toggle-btns .btn { padding: 6px 8px; font-size: 11px; }
+        #tool-hint { font-size: 11px; color: #fbbf24; background: #111216; padding: 8px 10px; border-radius: 4px; border: 1px solid #27272a; line-height: 1.4; }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
     <div id="sidebar">
-        <div>
+        <div style="padding-bottom: 2px;">
             <div style="display: flex; align-items: center; justify-content: space-between;">
-                <div style="font-size: 14px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">THADAM P2P MESH</div>
-                <span id="mesh-status" style="font-size: 9px; padding: 2px 7px; border-radius: 9999px; background: #1c1917; color: #fbbf24; border: 1px solid #d97706; font-weight: 700; letter-spacing: 0.5px;">CONNECTING</span>
+                <div style="font-size: 17px; font-weight: 800; color: #f4f4f5; letter-spacing: 0.5px;">THADAM P2P MESH</div>
+                <span id="mesh-status" style="font-size: 11px; padding: 3px 9px; border-radius: 9999px; background: #1c1917; color: #fbbf24; border: 1px solid #d97706; font-weight: 700; letter-spacing: 0.5px;">CONNECTING</span>
             </div>
-            <div style="font-size: 10px; color: #71717a; letter-spacing: 0.3px; margin-top: 2px;">TRAJECTORY-AWARE HEURISTICS FOR AUTONOMOUS DECENTRALIZED AMR MESH</div>
+            <div style="font-size: 11px; color: #a1a1aa; letter-spacing: 0.3px; margin-top: 3px; line-height: 1.3;">TRAJECTORY-AWARE HEURISTICS FOR AUTONOMOUS DECENTRALIZED AMR MESH</div>
         </div>
 
-        <div class="card">
-            <div class="card-header">Fleet Scale (AMRs)</div>
-            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px;">
-                <button class="tool-btn" id="scale-2" onclick="setFleetScale(2)">2 AMRs</button>
-                <button class="tool-btn active" id="scale-4" onclick="setFleetScale(4)">4 AMRs</button>
-                <button class="tool-btn" id="scale-6" onclick="setFleetScale(6)">6 AMRs</button>
-                <button class="tool-btn" id="scale-8" onclick="setFleetScale(8)">8 AMRs</button>
-                <button class="tool-btn" id="scale-10" onclick="setFleetScale(10)">10 AMRs</button>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">Interactive Tool</div>
-            <div class="tool-bar">
-                <button class="tool-btn active" id="tool-obs" onclick="setTool('obs')">Wall Tool</button>
-                <button class="tool-btn" id="tool-task" onclick="setTool('task')">Dispatch</button>
-                <button class="tool-btn" id="tool-manual" onclick="setTool('manual')">Direct AMR</button>
-            </div>
-            <div id="tool-hint" style="font-size: 10px; color: #f59e0b; background: #14151a; padding: 6px; border-radius: 3px; border: 1px solid #27272a;">
-                Click any cell to toggle dynamic obstacles.
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">Test Scenarios & Dynamic Chaos</div>
-            <div style="display: flex; flex-direction: column; gap: 5px;">
-                <button class="btn" onclick="loadScenario(1)">Scenario 1: Head-On Bottleneck (2 AMRs)</button>
-                <button class="btn" onclick="loadScenario(2)">Scenario 2: 4-Way Gridlock (4 AMRs)</button>
-                <button class="btn" onclick="loadScenario(3)">Scenario 3: Fleet Rush (8 Tasks)</button>
-                <button class="btn" onclick="loadScenario(4)" style="border-color: #f59e0b; color: #fbbf24;">Scenario 4: Blocked Aisle Corridor (4 AMRs)</button>
-                <button class="btn btn-danger" id="btn-block-aisle" onclick="toggleBlockedAisle()" style="font-weight: 800; background: #7f1d1d; border-color: #ef4444; color: #fef2f2; margin-top: 4px;">
-                    🚨 Block Aisle (Dynamic Replan)
-                </button>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">Fleet Metrics</div>
+        <!-- 1. Permanent Top Scoreboard (KPI Bar) -->
+        <div class="card" style="padding: 10px 12px;">
             <div class="stat-grid">
                 <div class="stat-box">
-                    <div class="stat-label">Tick</div>
-                    <div class="stat-val" id="tick-val">0</div>
+                    <div class="stat-label">Safety Status</div>
+                    <div class="stat-val stat-val-green" id="collisions-val">0 Fail</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Completed Tasks</div>
+                    <div class="stat-label">Tasks Completed</div>
                     <div class="stat-val stat-val-amber" id="tasks-done">0</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Collisions</div>
-                    <div class="stat-val stat-val-green" id="collisions-val">0</div>
+                    <div class="stat-label">THADAM vs CBS</div>
+                    <div class="stat-val stat-val-green" id="bench-swarm">+22%</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Safety Invariant</div>
-                    <div class="stat-val stat-val-green" style="font-size: 11px; margin-top: 4px;">PASS [0 Violations]</div>
+                    <div class="stat-label">Simulation Tick</div>
+                    <div class="stat-val" id="tick-val">0</div>
                 </div>
             </div>
         </div>
 
+        <!-- 2. Fleet Scale & Edge-AI System Config -->
         <div class="card">
-            <div class="card-header">Node Control & Recovery</div>
-            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; max-height: 120px; overflow-y: auto;" id="robot-toggle-btns"></div>
-            <div class="btn-grid" style="margin-top: 8px;">
+            <div style="margin-bottom: 10px;">
+                <div class="card-header">Fleet Scale (AMRs)</div>
+                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px;">
+                    <button class="tool-btn" id="scale-2" onclick="setFleetScale(2)">2</button>
+                    <button class="tool-btn active" id="scale-4" onclick="setFleetScale(4)">4</button>
+                    <button class="tool-btn" id="scale-6" onclick="setFleetScale(6)">6</button>
+                    <button class="tool-btn" id="scale-8" onclick="setFleetScale(8)">8</button>
+                    <button class="tool-btn" id="scale-10" onclick="setFleetScale(10)">10</button>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 10px;">
+                <div class="card-header">Autonomous Guidance Engine</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                    <button class="tool-btn active" id="ai-off" onclick="setAiMode(false)">Classic (Deterministic)</button>
+                    <button class="tool-btn" id="ai-on" onclick="setAiMode(true)">Neural (Edge-AI)</button>
+                </div>
+            </div>
+
+            <div>
+                <div class="card-header">Interactive Canvas Tool</div>
+                <div class="tool-bar">
+                    <button class="tool-btn active" id="tool-obs" onclick="setTool('obs')">🧱 Wall Tool</button>
+                    <button class="tool-btn" id="tool-task" onclick="setTool('task')">📦 Dispatch Task</button>
+                    <button class="tool-btn" id="tool-manual" onclick="setTool('manual')">🤖 Direct AMR</button>
+                </div>
+                <div id="tool-hint">Click any cell to toggle dynamic obstacles.</div>
+            </div>
+        </div>
+
+        <!-- 3. Scenarios, Chaos & Node Recovery -->
+        <div class="card">
+            <div class="card-header">Test Scenarios & Dynamic Chaos</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
+                <button class="btn" onclick="loadScenario(1)">S1: Head-On Bottleneck</button>
+                <button class="btn" onclick="loadScenario(2)">S2: 4-Way Gridlock</button>
+                <button class="btn" onclick="loadScenario(3)">S3: Fleet Rush (8 Tasks)</button>
+                <button class="btn" onclick="loadScenario(4)" style="border-color: #f59e0b; color: #fbbf24;">S4: Blocked Corridor</button>
+            </div>
+            <div style="display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; margin-bottom: 10px;">
+                <button class="btn btn-danger" id="btn-block-aisle" onclick="toggleBlockedAisle()" style="font-weight: 800; background: #7f1d1d; border-color: #ef4444; color: #fef2f2; padding: 8px 6px;">
+                    🚨 Block Aisle
+                </button>
                 <button class="btn" onclick="clearObstacles()">Clear Walls</button>
                 <button class="btn" onclick="resetFleet()">Reset Fleet</button>
             </div>
-            <div class="slider-container" style="margin-top: 10px;">
-                <span>Speed:</span>
-                <input type="range" min="20" max="400" value="120" class="slider" id="speed-slider" oninput="changeSpeed(this.value)">
-                <span id="speed-label" style="color:#e4e4e7;">120ms</span>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">Chaos Bench (FEC + Burst)</div>
-            <div class="slider-container">
-                <span>Loss:</span>
-                <input type="range" min="0" max="50" value="0" class="slider" id="loss-slider" oninput="setPacketLoss(this.value)">
-                <span id="loss-label" style="color:#e4e4e7;">0%</span>
-            </div>
-            <div style="font-size:10px; color:#71717a; margin-top:6px;">Dual-burst (N=2) + XOR parity absorbs up to 25% loss with zero retransmits.</div>
-            <div class="btn-grid" style="margin-top:8px;">
-                <button class="btn btn-danger" onclick="killRobot(2)">Kill Robot 2</button>
-                <button class="btn btn-restore" onclick="reviveRobot(2)">Revive Robot 2</button>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">Benchmark: Centralized CBS vs SwarmEdge</div>
-            <div class="stat-grid">
-                <div class="stat-box">
-                    <div class="stat-label">CBS Makespan</div>
-                    <div class="stat-val" id="bench-cbs">100</div>
+            <div style="background: #111216; padding: 10px 12px; border-radius: 5px; border: 1px solid #27272a; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px;">
+                <div class="slider-row">
+                    <span class="slider-title">Speed (Tick Delay):</span>
+                    <input type="range" min="20" max="400" value="120" class="slider" id="speed-slider" oninput="changeSpeed(this.value)">
+                    <span id="speed-label" class="slider-readout">120ms</span>
                 </div>
-                <div class="stat-box">
-                    <div class="stat-label">SwarmEdge</div>
-                    <div class="stat-val stat-val-green" id="bench-swarm">78 (-22%)</div>
+                <div class="slider-row">
+                    <span class="slider-title">Mesh Packet Loss:</span>
+                    <input type="range" min="0" max="50" value="0" class="slider" id="loss-slider" oninput="setPacketLoss(this.value)">
+                    <span id="loss-label" class="slider-readout">0%</span>
                 </div>
             </div>
-            <div style="font-size:10px; color:#71717a; margin-top:6px;">Live makespan timer runs below; /api/benchmark serves this comparison.</div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; max-height: 85px; overflow-y: auto;" id="robot-toggle-btns"></div>
         </div>
 
-        <div class="card" style="flex: 1; max-height: 180px; overflow-y: auto;">
-            <div class="card-header">Active Fleet (<span id="robot-count">0</span>)</div>
-            <div id="robot-list"></div>
-        </div>
-
-        <div class="card" style="max-height: 110px; overflow-y: auto;">
-            <div class="card-header">Task Auction Pool</div>
-            <div id="task-list"></div>
+        <!-- 4. Active Fleet & Task Auction Pool -->
+        <div class="card" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 120px; max-height: 160px; overflow: hidden;">
+            <div style="display: flex; flex-direction: column; overflow: hidden;">
+                <div class="card-header" style="margin-bottom: 6px;">Active Fleet (<span id="robot-count">0</span>)</div>
+                <div id="robot-list" style="overflow-y: auto; flex: 1; padding-right: 4px;"></div>
+            </div>
+            <div style="display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #27272a; padding-left: 10px;">
+                <div class="card-header" style="margin-bottom: 6px;">Task Auction Pool</div>
+                <div id="task-list" style="overflow-y: auto; flex: 1; padding-right: 4px;"></div>
+            </div>
         </div>
     </div>
 
     <div id="main">
-        <div style="display:flex; gap:6px; margin-bottom:8px;">
-            <button class="tool-btn active" id="view-2d" onclick="setView('2d')">2D Grid</button>
-            <button class="tool-btn" id="view-3d" onclick="setView('3d')">3D Three.js Twin</button>
+        <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="tool-btn active" id="view-2d" onclick="setView('2d')" style="padding: 8px 18px; font-size: 12px; font-weight: 700;">2D Grid View</button>
+            <button class="tool-btn" id="view-3d" onclick="setView('3d')" style="padding: 8px 18px; font-size: 12px; font-weight: 700;">3D Three.js Twin</button>
         </div>
         <canvas id="gridCanvas" width="660" height="660"></canvas>
-        <div id="threeContainer" style="display:none; width:660px; height:660px; position:relative; border-radius:4px; overflow:hidden; border:1px solid #3f3f46; box-shadow: 0 4px 20px rgba(0,0,0,0.8);">
+        <div id="threeContainer" style="display:none; width:660px; height:660px; position:relative; border-radius:6px; overflow:hidden; border:1px solid #3f3f46; box-shadow: 0 6px 24px rgba(0,0,0,0.85);">
             <canvas id="threeCanvas" width="660" height="660" style="display:block; width:100%; height:100%;"></canvas>
-            <div style="position:absolute; top:8px; right:8px; background:rgba(20,21,26,0.85); border:1px solid #3f3f46; padding:3px 8px; border-radius:3px; font-size:10px; color:#a1a1aa; pointer-events:none;">
+            <div style="position:absolute; top:8px; right:8px; background:rgba(20,21,26,0.85); border:1px solid #3f3f46; padding:4px 10px; border-radius:4px; font-size:11px; color:#d4d4d8; pointer-events:none;">
                 Three.js WebGL Twin &bull; Drag: Orbit &bull; Wheel: Zoom
             </div>
         </div>
-        <canvas id="isoCanvas" width="660" height="660" style="display:none; background:#14151a; border:1px solid #3f3f46; border-radius:4px;"></canvas>
+        <canvas id="isoCanvas" width="660" height="660" style="display:none; background:#14151a; border:1px solid #3f3f46; border-radius:6px;"></canvas>
         <div class="legend-bar">
-            <div style="display:flex; align-items:center; gap:5px;"><div style="width:9px;height:9px;background:#27272a;border:1px solid #3f3f46;"></div> Static Shelf</div>
-            <div style="display:flex; align-items:center; gap:5px;"><div style="width:9px;height:9px;background:#ef4444;"></div> Dynamic Block</div>
-            <div style="display:flex; align-items:center; gap:5px;"><div style="width:9px;height:9px;background:#059669;"></div> Pickup Zone</div>
-            <div style="display:flex; align-items:center; gap:5px;"><div style="width:9px;height:9px;background:#4f46e5;"></div> Dropoff Zone</div>
+            <div style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;background:#27272a;border:1px solid #3f3f46;border-radius:2px;"></div> Static Shelf</div>
+            <div style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;background:#ef4444;border-radius:2px;"></div> Dynamic Block</div>
+            <div style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;background:#059669;border-radius:2px;"></div> Pickup Zone</div>
+            <div style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;background:#4f46e5;border-radius:2px;"></div> Dropoff Zone</div>
         </div>
     </div>
 
@@ -517,6 +528,16 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                 btn.style.borderColor = '#ef4444';
                 document.getElementById('tool-hint').innerText = 'Corridor unblocked. Dynamic obstacles removed.';
             }
+        }
+
+        function setAiMode(enabled) {
+            document.getElementById('ai-off').classList.toggle('active', !enabled);
+            document.getElementById('ai-on').classList.toggle('active', enabled);
+            fetch('/api/ai-mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
         }
 
         function setPacketLoss(pct) {
@@ -867,6 +888,12 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             document.getElementById('collisions-val').innerText = frame.collisions;
             document.getElementById('robot-count').innerText = frame.robots.length;
 
+            // Mirror server-side AI state (covers out-of-band mode changes).
+            if (typeof frame.ai_enabled === 'boolean') {
+                document.getElementById('ai-off').classList.toggle('active', !frame.ai_enabled);
+                document.getElementById('ai-on').classList.toggle('active', frame.ai_enabled);
+            }
+
             drawBaseGrid();
 
             // Draw Static Shelves
@@ -913,9 +940,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 
                         taskListEl.innerHTML += `
                             <div class="task-row">
-                                <span>Task #${t.task_id}</span>
-                                <span>(${t.pickup.x},${t.pickup.y}) → (${t.dropoff.x},${t.dropoff.y})</span>
-                                <span style="color:${t.assigned_to ? '#f4f4f5':'#f59e0b'}">${t.assigned_to ? 'AMR-'+t.assigned_to : 'OPEN'}</span>
+                                <span style="font-weight:700; color:#f4f4f5;">#${t.task_id}</span>
+                                <span style="color:#d4d4d8;">(${t.pickup.x},${t.pickup.y}) → (${t.dropoff.x},${t.dropoff.y})</span>
+                                <span style="font-weight:700; color:${t.assigned_to ? '#38bdf8':'#f59e0b'}">${t.assigned_to ? 'AMR-'+t.assigned_to : 'OPEN'}</span>
                             </div>
                         `;
                     }
@@ -985,11 +1012,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     <div class="robot-item" onclick="selectRobotDirect(${r.id})" style="cursor:pointer;">
                         <div>
                             <span style="color:${col}; font-weight:700;">AMR-${r.id}</span>
-                            <span style="color:#71717a; font-size:10px; margin-left:3px;">(${r.pos.x},${r.pos.y})</span>
+                            <span style="color:#a1a1aa; font-size:11px; margin-left:4px;">(${r.pos.x},${r.pos.y})</span>
                         </div>
-                        <div>
+                        <div style="display:flex; align-items:center; gap:6px;">
                             <span class="badge ${badgeClass}">${r.status}</span>
-                            <span style="font-size:10px; color:#a1a1aa; margin-left:4px;">${Math.round(r.battery * 100)}%</span>
+                            <span style="font-size:11px; color:#e4e4e7; font-weight:600;">${Math.round(r.battery * 100)}%</span>
                         </div>
                     </div>
                 `;
@@ -1254,6 +1281,15 @@ async fn packet_loss_handler(
     Json("Packet loss set")
 }
 
+async fn ai_mode_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AiModeReq>,
+) -> Json<&'static str> {
+    let mut q = state.control_queue.lock().unwrap();
+    q.push(ControlCommand::SetAiMode(req.enabled));
+    Json("AI mode set")
+}
+
 async fn benchmark_handler(State(state): State<AppState>) -> Json<BenchmarkComparison> {
     // Live counters are broadcast-only; the comparison baselines come from
     // metrics_tests (centralized CBS vs SwarmEdge makespan on the reference
@@ -1303,6 +1339,7 @@ pub async fn start_dashboard_server(
         .route("/api/reset", post(reset_handler))
         .route("/api/speed", post(speed_handler))
         .route("/api/packet-loss", post(packet_loss_handler))
+        .route("/api/ai-mode", post(ai_mode_handler))
         .route("/api/benchmark", get(benchmark_handler))
         .with_state(state);
 

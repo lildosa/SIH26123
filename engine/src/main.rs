@@ -460,6 +460,7 @@ async fn main() {
             let mut auto_spawn = true;
             let mut task_counter = 0;
             let mut total_collisions = 0;
+            let mut ai_enabled = false;
 
             loop {
                 // 1. Process control commands from Web UI
@@ -633,6 +634,29 @@ async fn main() {
                             // dual-burst transport absorbs it without stalls.
                             let _ = rate;
                         }
+                        ControlCommand::SetAiMode(enabled) => {
+                            // Live Edge-AI switch: deterministic (kinematic +
+                            // static weights) vs model-assisted (neural A* +
+                            // LinUCB). Takes effect on the next planning tick.
+                            let guidance = if enabled {
+                                sih26123::ai::SharedGuidance::global()
+                            } else {
+                                None
+                            };
+                            for r in &mut runner.robots {
+                                r.guidance = guidance.clone();
+                                r.bid_bandit = if enabled {
+                                    Some(sih26123::ai::LinUcbBandit::new())
+                                } else {
+                                    None
+                                };
+                            }
+                            ai_enabled = enabled;
+                            println!(
+                                "Edge-AI mode -> {}",
+                                if enabled { "MODEL-ASSISTED (neural guidance + adaptive bids)" } else { "DETERMINISTIC" }
+                            );
+                        }
                         ControlCommand::ToggleContinuous(enabled) => {
                             auto_spawn = enabled;
                         }
@@ -707,6 +731,7 @@ async fn main() {
                     tasks: all_tasks,
                     completed_count: completed,
                     collisions: total_collisions,
+                    ai_enabled,
                 });
 
                 tokio::time::sleep(Duration::from_millis(tick_delay_ms)).await;
