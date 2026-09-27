@@ -20,11 +20,11 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 
 ---
 
-## 1.5 ⚡ Edge-AI Highlights (New — Beyond the Submitted PPT)
+## 1.5 Edge-AI Highlights (New — Beyond the Submitted PPT)
 
 > **TL;DR for evaluators:** THADAM now ships two trained AI components that run **entirely on-robot in pure Rust** — no Python runtime, no cloud calls, no IPC. One *steers navigation*; the other *learns how to bid for tasks*. Both are advisory: all ISO 3691-4 collision-avoidance invariants are enforced identically with AI on or off (76/76 automated tests, zero collisions in 360 benchmarked runs).
 
-| | 🧭 Neural A* Guidance (Navigation) | 🎯 LinUCB Adaptive Bidding (Task Allocation) |
+| | Neural A* Guidance (Navigation) | LinUCB Adaptive Bidding (Task Allocation) |
 |---|---|---|
 | **What it is** | 48,161-parameter neural network (~48 KB fp32 / 194 KB ONNX, **embedded in the binary**) predicts an obstacle-detour cost-to-go heatmap over a 32×32 window | Contextual bandit (6 context features, 4 bid-weight profiles) per robot that learns **how to weight its own auction bids** from win/loss outcomes |
 | **How it helps** | Reorders the Space-Time A* open set toward detour-friendly cells | Starts exactly at static-default behavior; adapts weights only on evidence (conservative arm = static weights) |
@@ -48,7 +48,10 @@ cargo run --release -- sim --robots 8 --width 32 --height 32 --tasks 10 \n  --ne
 cargo run --release -- batch --robots 4,6,8 --sizes 15,24,32 --seeds 10 \n  --configs static,learned,neural,full,auto,autofull | python3 ../scripts/aggregate_stats.py
 ```
 
-Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn) · Training pipeline: [`scripts/train_guidance_model.py`](scripts/train_guidance_model.py) · Deep dive: [`docs/ARCHITECTURE.md §3.4`](docs/ARCHITECTURE.md) · Engine-side inference: [`engine/src/ai/guidance.rs`](engine/src/ai/guidance.rs)
+· Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn) 
+· Training pipeline: [`scripts/train_guidance_model.py`](scripts/train_guidance_model.py) 
+· Deep dive: [`docs/ARCHITECTURE.md §3.4`](docs/ARCHITECTURE.md) 
+· Engine-side inference: [`engine/src/ai/guidance.rs`](engine/src/ai/guidance.rs)
 
 ---
 
