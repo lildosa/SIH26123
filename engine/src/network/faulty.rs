@@ -7,9 +7,9 @@ use std::time::Duration;
 
 pub struct FaultyNetwork<N: Network> {
     pub inner: N,
-    pub drop_rate: f64,              // 0.0 to 1.0
-    pub delay_range_ms: (u64, u64),  // (min, max) delay
-    pub duplicate_rate: f64,         // 0.0 to 1.0
+    pub drop_rate: f64,             // 0.0 to 1.0
+    pub delay_range_ms: (u64, u64), // (min, max) delay
+    pub duplicate_rate: f64,        // 0.0 to 1.0
     pub reorder_buffer: Mutex<Vec<Envelope>>,
     /// Split-brain partition simulation: envelopes FROM these senders are
     /// dropped on receive. Empty = fully healed mesh.

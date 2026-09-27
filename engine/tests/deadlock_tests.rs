@@ -1,11 +1,16 @@
-use sih26123::negotiator::{resolve_deadlocks, should_yield, should_yield_under_uncertainty, WaitForGraph};
+use sih26123::negotiator::{
+    WaitForGraph, resolve_deadlocks, should_yield, should_yield_under_uncertainty,
+};
 
 #[test]
 fn test_no_deadlock() {
     let mut wfg = WaitForGraph::new();
     wfg.add_wait(1, 2); // 1 waits for 2, 2 is moving freely
     let cycles = wfg.detect_cycles();
-    assert!(cycles.is_empty(), "No cycle should be detected in linear wait");
+    assert!(
+        cycles.is_empty(),
+        "No cycle should be detected in linear wait"
+    );
     assert!(resolve_deadlocks(&wfg).is_empty());
 }
 
@@ -29,7 +34,11 @@ fn test_three_robot_cycle() {
     let cycles = wfg.detect_cycles();
     assert_eq!(cycles.len(), 1);
     let yielders = resolve_deadlocks(&wfg);
-    assert_eq!(yielders, vec![3], "Robot 3 should yield in 1->2->3->1 cycle");
+    assert_eq!(
+        yielders,
+        vec![3],
+        "Robot 3 should yield in 1->2->3->1 cycle"
+    );
 }
 
 #[test]
@@ -92,7 +101,10 @@ fn test_deterministic_under_stale_views() {
     let b_view_b_yields = should_yield(2, 2, 1, 1);
 
     // Both sides must independently agree: A does not yield, B yields
-    assert!(!a_view_a_yields, "Robot A correctly knows it does not yield");
+    assert!(
+        !a_view_a_yields,
+        "Robot A correctly knows it does not yield"
+    );
     assert!(b_view_b_yields, "Robot B correctly knows it must yield");
 }
 

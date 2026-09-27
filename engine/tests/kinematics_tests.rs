@@ -36,7 +36,11 @@ fn test_90_degree_turn_delay() {
     );
     // Turning invariant: the first stationary reservation locks the start cell.
     assert_eq!(path[0].0, Pos::new(3, 3));
-    assert_eq!(path[1].0, Pos::new(3, 3), "90-degree turn holds cell for 1 tick");
+    assert_eq!(
+        path[1].0,
+        Pos::new(3, 3),
+        "90-degree turn holds cell for 1 tick"
+    );
     assert_eq!(path[1].1, path[0].1 + 1);
     assert_eq!(path.last().unwrap().0, Pos::new(5, 3));
     // Ticks strictly increase along the ribbon.
@@ -78,8 +82,16 @@ fn test_180_degree_turnaround_in_aisle() {
 
     // North -> South reversal needs 2 stationary ticks at the start cell.
     assert_eq!(path[0].0, Pos::new(3, 3));
-    assert_eq!(path[1].0, Pos::new(3, 3), "180-degree turn holds cell tick 1");
-    assert_eq!(path[2].0, Pos::new(3, 3), "180-degree turn holds cell tick 2");
+    assert_eq!(
+        path[1].0,
+        Pos::new(3, 3),
+        "180-degree turn holds cell tick 1"
+    );
+    assert_eq!(
+        path[2].0,
+        Pos::new(3, 3),
+        "180-degree turn holds cell tick 2"
+    );
     assert_eq!(path[1].1, 11);
     assert_eq!(path[2].1, 12);
     assert_eq!(path.last().unwrap().0, Pos::new(3, 4));

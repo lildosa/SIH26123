@@ -1,6 +1,6 @@
+use sih26123::network::Network;
 use sih26123::network::faulty::FaultyNetwork;
 use sih26123::network::in_memory::InMemoryBus;
-use sih26123::network::Network;
 use sih26123::protocol::{Envelope, FleetMessage, HeartbeatMsg};
 
 #[tokio::test]
@@ -16,7 +16,10 @@ async fn test_faulty_transport_packet_drop_simulation() {
             sender_id: 1,
             seq: 1,
             lamport_ts: 0,
-            payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 1,
+                battery: 1.0,
+            }),
         })
         .await;
 
@@ -38,13 +41,20 @@ async fn test_faulty_transport_packet_duplication() {
             sender_id: 1,
             seq: 1,
             lamport_ts: 0,
-            payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 1,
+                battery: 1.0,
+            }),
         })
         .await;
 
     bus.flush_tick();
     let inbox2 = node2.drain().await;
-    assert_eq!(inbox2.len(), 2, "100% duplication must result in 2 messages in inbox");
+    assert_eq!(
+        inbox2.len(),
+        2,
+        "100% duplication must result in 2 messages in inbox"
+    );
 }
 
 #[tokio::test]
@@ -60,7 +70,10 @@ async fn test_faulty_transport_latency_staged_delivery() {
             sender_id: 1,
             seq: 1,
             lamport_ts: 0,
-            payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 1,
+                battery: 1.0,
+            }),
         })
         .await;
 
@@ -85,7 +98,10 @@ async fn test_zero_loss_clean_channel() {
                 sender_id: 1,
                 seq,
                 lamport_ts: 0,
-                payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: seq, battery: 1.0 }),
+                payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                    tick: seq,
+                    battery: 1.0,
+                }),
             })
             .await;
     }

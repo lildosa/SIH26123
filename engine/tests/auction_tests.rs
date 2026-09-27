@@ -1,13 +1,31 @@
-use sih26123::auction::{compute_bid_cost, Auction, AuctionConfig};
+use sih26123::auction::{Auction, AuctionConfig, compute_bid_cost};
 use sih26123::protocol::BidMsg;
 use sih26123::world::Pos;
 
 #[test]
 fn test_lowest_bid_wins() {
     let mut auction = Auction::new(101, Pos::new(0, 0), Pos::new(5, 5), 0, 5);
-    auction.add_bid(1, &BidMsg { task_id: 101, cost: 5.0 });
-    auction.add_bid(2, &BidMsg { task_id: 101, cost: 3.0 });
-    auction.add_bid(3, &BidMsg { task_id: 101, cost: 7.0 });
+    auction.add_bid(
+        1,
+        &BidMsg {
+            task_id: 101,
+            cost: 5.0,
+        },
+    );
+    auction.add_bid(
+        2,
+        &BidMsg {
+            task_id: 101,
+            cost: 3.0,
+        },
+    );
+    auction.add_bid(
+        3,
+        &BidMsg {
+            task_id: 101,
+            cost: 7.0,
+        },
+    );
 
     let award = auction.determine_winner();
     assert!(award.is_some());
@@ -20,13 +38,28 @@ fn test_lowest_bid_wins() {
 fn test_tie_broken_by_id() {
     let mut auction = Auction::new(102, Pos::new(0, 0), Pos::new(5, 5), 0, 5);
     // Both bids have cost 4.0
-    auction.add_bid(5, &BidMsg { task_id: 102, cost: 4.0 });
-    auction.add_bid(2, &BidMsg { task_id: 102, cost: 4.0 });
+    auction.add_bid(
+        5,
+        &BidMsg {
+            task_id: 102,
+            cost: 4.0,
+        },
+    );
+    auction.add_bid(
+        2,
+        &BidMsg {
+            task_id: 102,
+            cost: 4.0,
+        },
+    );
 
     let award = auction.determine_winner();
     assert!(award.is_some());
     let award = award.unwrap();
-    assert_eq!(award.winner_id, 2, "Robot 2 with lower ID should win tiebreak");
+    assert_eq!(
+        award.winner_id, 2,
+        "Robot 2 with lower ID should win tiebreak"
+    );
 }
 
 #[test]
