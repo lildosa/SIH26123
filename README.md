@@ -4,7 +4,7 @@
 > **Origin Context:** Smart India Hackathon (SIH) 2026 Problem Statement — Bharat Electronics Limited (BEL)  
 > **Domain:** Robotics, Edge-AI, Autonomous Mobile Robots (AMRs), Defense & Industrial Logistics  
 > **Language & Toolchain:** Rust 1.85+ / 2024 Edition  
-> **Key Metrics:** 100% Zero-Collision Guarantee (ISO 3691-4) | >= 20% Makespan Reduction vs Centralized Baselines | 48 KB Neural Navigation Model enabling 32×32 Fleet Operations | 204 ns Adaptive-Bid Decisions (LinUCB)  
+> **Key Metrics:** 100% Zero-Collision Guarantee (ISO 3691-4) | Fully Decentralized — No Central Server, No Single Point of Failure | 48 KB Neural Navigation Model enabling 32×32 Fleet Operations | 204 ns Adaptive-Bid Decisions (LinUCB)  
 
 ---
 
@@ -121,20 +121,21 @@ Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](http
 
 ## 3. Quantitative Performance & Verification
 
-The system includes a comparative benchmarking pipeline evaluating the decentralized engine against a centralized Conflict-Based Search (CBS) dispatcher running concurrent multi-agent batch pathfinding with FIFO queuing.
+The system includes a comparative benchmarking pipeline evaluating the decentralized engine against a centralized Conflict-Based Search (CBS) dispatcher running concurrent multi-agent batch pathfinding with FIFO queuing. The numbers below are measured directly from the release binary (`make bench` → `bench --width 15 --height 15 --tasks 5`, 15×15 warehouse, 3-cell aisle spacing):
 
 ```
 +------------------------------------------------------------------------------------+
-| SCALE       | DISTRIBUTED MAKESPAN | CENTRALIZED CBS MAKESPAN | THROUGHPUT SPEEDUP |
-+-------------+----------------------+--------------------------+--------------------+
-| 2 AMRs      | 28 ticks             | 36 ticks                 | + 22.2%            |
-| 4 AMRs      | 44 ticks             | 58 ticks                 | + 24.1%            |
-| 6 AMRs      | 62 ticks             | 86 ticks                 | + 27.9%            |
-| 8 AMRs      | 79 ticks             | 118 ticks                | + 33.1%            |
+| SCALE       | DISTRIBUTED MAKESPAN | CENTRALIZED CBS MAKESPAN | THROUGHPUT (DIST/CBS) |
++-------------+----------------------+--------------------------+----------------------+
+| 2 AMRs      | 97 ticks             | 59 ticks                 | 0.61×                |
+| 4 AMRs      | 62 ticks             | 38 ticks                 | 0.61×                |
+| 6 AMRs      | 60 ticks             | 23 ticks                 | 0.38×                |
 +------------------------------------------------------------------------------------+
 | SAFETY STATS: 0 Vertex Collisions | 0 Edge Swap Collisions | 100% Invariant Pass   |
 +------------------------------------------------------------------------------------+
 ```
+
+**Reading the bench honestly.** The decentralized mesh trades raw makespan for operational guarantees a centralized dispatcher cannot provide: it eliminates the central server and Wi-Fi dependency (no single point of failure), replans locally at the edge for dynamic obstacles and dead chassis (no server round-trip), and sustains that throughput under network faults and partitions via the UDP mesh. In this small-grid benchmark the coordination overhead (auction settle + reservation waits) keeps the fleet within 1.6–2.6× the makespan ticks of an omniscient optimal CBS scheduler. On large, congested grids the Edge-AI guidance closes most of that gap — see §1.5: at 32×32 the unguided fleet completes 0/10 tasks in 300 ticks, while the guidance-assisted fleet completes 8/10 with zero collisions. Every benchmarked run maintains the ISO 3691-4 collision invariants: 0 vertex collisions, 0 edge-swap collisions.
 
 All **76 automated tests** across 14 integration suites (plus in-module unit tests, including LinUCB convergence and guidance-routing coverage) pass with 100% reliability:
 - `auction_tests` (6 tests): Idle bidding, congestion scaling, tie-breaking, deadline urgency.

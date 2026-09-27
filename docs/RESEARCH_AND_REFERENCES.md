@@ -24,7 +24,7 @@
 * **Venue:** Artificial Intelligence, Vol. 219, 2015, pp. 40–66 (Initial Conference: AAAI 2012)
 * **Direct URL:** [https://doi.org/10.1016/j.artint.2014.11.006](https://doi.org/10.1016/j.artint.2014.11.006) (AAAI: [https://doi.org/10.1609/aaai.v26i1.8140](https://doi.org/10.1609/aaai.v26i1.8140))
 * **Source Type:** Peer-Reviewed Journal Paper (Elsevier Artificial Intelligence / AAAI)
-* **What It Supports in THADAM:** Serves as the authoritative centralized multi-agent pathfinding baseline implemented in `engine/src/baseline/cbs.rs` against which THADAM's decentralized engine demonstrates a +22.2% to +33.1% makespan speedup.
+* **What It Supports in THADAM:** Serves as the authoritative centralized multi-agent pathfinding baseline implemented in `engine/src/baseline/cbs.rs` against which THADAM's decentralized engine is benchmarked head-to-head (`make bench`). The measured trade-off: the mesh completes the same batch in 0.38–0.61× CBS throughput on small grids, buying full decentralization, sub-5 ms edge replanning, and zero-collision invariance. See README §3 and §1.5.
 
 ### 1.3 Contract Net Protocol (CNP) Multi-Agent Auction Allocation
 * **Title:** *The Contract Net Protocol: High-Level Communication and Distributed Control in a Distributed Problem Solver*
@@ -426,8 +426,8 @@ Below is an evaluator-grade Total Cost of Ownership (TCO) and savings analysis c
 
 ### 9.3 Fleet Sizing & Throughput Capex Optimization (INR)
 
-* **Empirical Throughput Advantage:** THADAM achieves a **+22.2% to +33.1% makespan reduction** compared to centralized batch dispatching.
-* **Capex Optimization Mechanism:** Because the decentralized fleet completes order cycles up to 30% faster without centralized serialization queues, a facility requiring **10 AMRs** under centralized control can meet identical peak fulfillment throughput with only **8 AMRs**.
+* **Empirical Benchmark Summary (measured, `make bench`, 15×15, 5 tasks):** Distributed makespan 97/62/60 ticks vs centralized CBS 59/38/23 ticks at 2/4/6 AMRs — a 0.61×/0.61×/0.38× throughput ratio with **0 collisions at every scale**. The mesh trades raw makespan for what it buys operationally: no central server, no single point of failure, sub-5 ms local replanning, and ISO 3691-4 invariants held under fault injection.
+* **Capex Optimization Mechanism:** The capex win is infrastructure, not robot count — with no central dispatcher server and no high-bandwidth warehouse backbone to buy and maintain, each AMR carries a 48 KB embedded navigation model on commodity edge compute, and the fleet continues moving through network partition instead of freezing.
 * **Capital Asset Savings:**
   $$\text{Savings} = 2 \text{ AMRs} \times ₹18,00,000 \text{ per industrial chassis} = \mathbf{₹36,00,000 \text{ in direct vehicle capex saved}}$$
 

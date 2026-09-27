@@ -394,15 +394,16 @@ flowchart TD
 The centralized baseline dispatcher (`CentralizedRunner`) models production centralized fleet servers by grouping all idle robots with assigned missions into concurrent batches and submitting them simultaneously into `cbs_plan(&self.grid, &batch_agents, tick)`. CBS branches on spatio-temporal collisions across all agents in the batch, guaranteeing collision-free joint trajectories with sequential Space-Time A* fallback on search timeout.
 
 ### Empirical Scaling Performance
-Benchmark metrics executed via `cargo bench` and `engine/tests/full_validation.rs` evaluate performance across identical warehouse configurations:
+Benchmark metrics executed via `make bench` (`bench --width 15 --height 15 --tasks 5`) and `engine/tests/full_validation.rs` evaluate performance across identical warehouse configurations. Measured on the release binary, 2026-09-27:
 
-| Metric | Centralized CBS Baseline | Distributed Engine (Our Implementation) | Empirical Advantage |
+| Metric | Centralized CBS Baseline | Distributed Engine (Our Implementation) | Measured Trade-off |
 | :--- | :--- | :--- | :--- |
 | **Architectural Model** | Central dispatch server | Fully decentralized P2P | Eliminates single point of failure |
 | **Search Space Complexity** | $O(2^C \cdot V \log V)$ global constraints | $O(V \log V + E)$ localized space-time search | Prevents combinatorial explosion |
-| **Makespan (2 AMRs)** | 45 ticks | 35 ticks | **+22.2% makespan improvement** |
-| **Makespan (4 AMRs)** | 78 ticks | 59 ticks | **+24.3% makespan improvement** |
-| **Makespan (8 AMRs)** | 124 ticks | 83 ticks | **+33.1% makespan improvement** |
+| **Makespan (2 AMRs, 5 tasks)** | 59 ticks | 97 ticks | 0.61× CBS throughput — cost of decentralization |
+| **Makespan (4 AMRs, 5 tasks)** | 38 ticks | 62 ticks | 0.61× CBS throughput — cost of decentralization |
+| **Makespan (6 AMRs, 5 tasks)** | 23 ticks | 60 ticks | 0.38× CBS throughput — cost of decentralization |
+| **Collisions (all scales)** | 0 | 0 | **100% invariant pass (ISO 3691-4)** |
 | **Failure Recovery Latency** | Full fleet replanning required | Localized edge replan (< 5 ms) | Zero fleet-wide stop commands |
 
 ---
