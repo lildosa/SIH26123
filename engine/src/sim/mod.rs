@@ -1,3 +1,3 @@
 pub mod runner;
 
-pub use runner::{SimConfig, SimEnvironment, SimResult, SimRunner};
+pub use runner::{GuidancePolicy, SimConfig, SimEnvironment, SimResult, SimRunner};

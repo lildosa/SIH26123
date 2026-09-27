@@ -43,12 +43,18 @@ fn test_fec_and_burst_recovery_under_packet_loss() {
     let ctrl = control_envelope(1, 9, 9);
     let frames = AdaptiveBurstTransport::encode(&ctrl);
     assert_eq!(frames.len(), 2, "Intent must dual-burst");
-    assert_eq!(frames[0].seq, frames[1].seq, "burst copies share seq for dedup");
+    assert_eq!(
+        frames[0].seq, frames[1].seq,
+        "burst copies share seq for dedup"
+    );
     let hb = Envelope {
         sender_id: 1,
         seq: 1,
         lamport_ts: 1,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
+        payload: FleetMessage::Heartbeat(HeartbeatMsg {
+            tick: 0,
+            battery: 1.0,
+        }),
     };
     assert_eq!(AdaptiveBurstTransport::encode(&hb).len(), 1);
 
@@ -86,7 +92,9 @@ fn test_fec_and_burst_recovery_under_packet_loss() {
         }
     }
     decoder.push_parity(parity);
-    let recovered = decoder.try_decode().expect("single loss must be recoverable");
+    let recovered = decoder
+        .try_decode()
+        .expect("single loss must be recoverable");
     assert_eq!(recovered[2], vec![7u8, 8, 9, 10]);
     assert_eq!(recovered.len(), 4, "mission payload fully reassembled");
 }
@@ -108,7 +116,10 @@ async fn test_split_brain_network_partition() {
         sender_id: 1,
         seq: 1,
         lamport_ts: 1,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 1, battery: 1.0 }),
+        payload: FleetMessage::Heartbeat(HeartbeatMsg {
+            tick: 1,
+            battery: 1.0,
+        }),
     })
     .await;
     bus.flush_tick();
@@ -123,7 +134,10 @@ async fn test_split_brain_network_partition() {
         sender_id: 1,
         seq: 2,
         lamport_ts: 2,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 2, battery: 1.0 }),
+        payload: FleetMessage::Heartbeat(HeartbeatMsg {
+            tick: 2,
+            battery: 1.0,
+        }),
     })
     .await;
     bus.flush_tick();
@@ -131,7 +145,10 @@ async fn test_split_brain_network_partition() {
     assert_eq!(healed.len(), 1, "healed mesh must deliver again");
 
     // Part B: each 40-tick half evolves locally with zero collisions.
-    for half in [vec![Pos::new(1, 0), Pos::new(1, 1)], vec![Pos::new(8, 8), Pos::new(7, 8)]] {
+    for half in [
+        vec![Pos::new(1, 0), Pos::new(1, 1)],
+        vec![Pos::new(8, 8), Pos::new(7, 8)],
+    ] {
         let config = SimConfig {
             num_robots: 2,
             grid_width: 10,
@@ -142,10 +159,17 @@ async fn test_split_brain_network_partition() {
             kill_robot_at: None,
             block_cell_at: None,
             start_positions: half,
+            use_neural_guidance: false,
+            use_learned_bids: false,
+            task_seed: None,
+            guidance_policy: sih26123::sim::GuidancePolicy::Off,
         };
         let mut runner = SimRunner::new(config);
         let result = runner.run().await;
-        assert_eq!(result.collisions, 0, "partition half must stay collision-free");
+        assert_eq!(
+            result.collisions, 0,
+            "partition half must stay collision-free"
+        );
     }
 
     // Part C: healed 4-robot fleet reconciles and progresses with zero collisions.
@@ -167,10 +191,17 @@ async fn test_split_brain_network_partition() {
             Pos::new(9, 11),
             Pos::new(8, 11),
         ],
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
     let mut runner = SimRunner::new(config);
     let result = runner.run().await;
-    assert_eq!(result.collisions, 0, "reconciled fleet must be collision-free");
+    assert_eq!(
+        result.collisions, 0,
+        "reconciled fleet must be collision-free"
+    );
     assert!(
         result.tasks_completed >= 1,
         "healed fleet must make mission progress"
@@ -205,15 +236,19 @@ fn test_dead_robot_re_auction_under_partition() {
     // Empty inbox = partition: no heartbeats arrive from peer 2.
     robot.decide_phase(vec![]);
 
-    let task = robot.known_tasks.get(&7).expect("task must still be tracked");
+    let task = robot
+        .known_tasks
+        .get(&7)
+        .expect("task must still be tracked");
     assert_eq!(
         task.status,
         TaskState::Reassigned,
         "partition-timed-out peer task must be marked Reassigned"
     );
     assert_eq!(task.assigned_to, None);
-    let reopened = robot.outbox.iter().any(|e| {
-        matches!(&e.payload, FleetMessage::AuctionOpen(m) if m.task_id == 7)
-    });
+    let reopened = robot
+        .outbox
+        .iter()
+        .any(|e| matches!(&e.payload, FleetMessage::AuctionOpen(m) if m.task_id == 7));
     assert!(reopened, "local peer must re-bid via fresh AuctionOpen");
 }

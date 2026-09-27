@@ -1,4 +1,4 @@
-use sih26123::baseline::{cbs_plan, CentralizedConfig, CentralizedRunner};
+use sih26123::baseline::{CentralizedConfig, CentralizedRunner, cbs_plan};
 use sih26123::world::{GridMap, Pos};
 
 #[test]
@@ -15,11 +15,21 @@ fn test_cbs_two_robots_crossing() {
 
     // Verify zero collisions in CBS paths
     for t in 0..100 {
-        let pos1 = paths[0].iter().find(|&&(_, tick)| tick == t).map(|&(p, _)| p);
-        let pos2 = paths[1].iter().find(|&&(_, tick)| tick == t).map(|&(p, _)| p);
+        let pos1 = paths[0]
+            .iter()
+            .find(|&&(_, tick)| tick == t)
+            .map(|&(p, _)| p);
+        let pos2 = paths[1]
+            .iter()
+            .find(|&&(_, tick)| tick == t)
+            .map(|&(p, _)| p);
 
         if let (Some(p1), Some(p2)) = (pos1, pos2) {
-            assert_ne!(p1, p2, "CBS paths must have 0 vertex collisions at tick {}", t);
+            assert_ne!(
+                p1, p2,
+                "CBS paths must have 0 vertex collisions at tick {}",
+                t
+            );
         }
     }
 }

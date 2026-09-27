@@ -1,4 +1,4 @@
-use crate::planner::{plan, SpaceTimeConstraints};
+use crate::planner::{SpaceTimeConstraints, plan};
 use crate::protocol::{RobotId, Tick};
 use crate::world::{GridMap, Pos};
 use std::collections::BinaryHeap;
@@ -121,7 +121,10 @@ pub fn cbs_plan(
                 };
 
                 let mut new_paths = curr.paths.clone();
-                let agent_idx = agents.iter().position(|&(id, _, _)| id == branch_agent_id).unwrap();
+                let agent_idx = agents
+                    .iter()
+                    .position(|&(id, _, _)| id == branch_agent_id)
+                    .unwrap();
                 let (id, start, goal) = agents[agent_idx];
 
                 let mut st_constraints = SpaceTimeConstraints::default();

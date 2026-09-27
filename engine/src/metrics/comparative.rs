@@ -12,6 +12,15 @@ pub struct BenchmarkRow {
     pub centralized_makespan: u64,
     pub centralized_collisions: usize,
     pub distributed_throughput_ratio: f64,
+    /// Open-set expansions across all distributed-space-time-A* plans.
+    #[serde(default)]
+    pub distributed_plan_expansions: usize,
+    /// Expansions from plans that consulted the guidance heatmap.
+    #[serde(default)]
+    pub guided_plan_expansions: usize,
+    /// Adaptive (LinUCB) bids placed across the fleet (0 when disabled).
+    #[serde(default)]
+    pub learned_bids: usize,
 }
 
 pub struct ComparativeBenchmark {
@@ -19,6 +28,12 @@ pub struct ComparativeBenchmark {
     pub num_tasks: usize,
     pub grid_width: usize,
     pub grid_height: usize,
+    /// Opt-in neural A* guidance for the distributed arm.
+    pub use_neural_guidance: bool,
+    /// Opt-in LinUCB adaptive bidding for the distributed arm.
+    pub use_learned_bids: bool,
+    /// Hybrid guidance routing for the distributed arm.
+    pub guidance_policy: crate::sim::GuidancePolicy,
 }
 
 impl ComparativeBenchmark {
@@ -28,6 +43,29 @@ impl ComparativeBenchmark {
             num_tasks,
             grid_width: width,
             grid_height: height,
+            use_neural_guidance: false,
+            use_learned_bids: false,
+            guidance_policy: crate::sim::GuidancePolicy::default(),
+        }
+    }
+
+    /// Benchmarks with neural guidance enabled for the distributed arm.
+    /// The model is embedded in the binary; missing/corrupt assets only
+    /// disable guidance (runs fall back to pure kinematic planning).
+    pub fn with_neural_guidance(
+        scales: Vec<usize>,
+        num_tasks: usize,
+        width: usize,
+        height: usize,
+    ) -> Self {
+        Self {
+            scales,
+            num_tasks,
+            grid_width: width,
+            grid_height: height,
+            use_neural_guidance: true,
+            use_learned_bids: false,
+            guidance_policy: crate::sim::GuidancePolicy::default(),
         }
     }
 
@@ -51,7 +89,12 @@ impl ComparativeBenchmark {
         }
 
         let tasks: Vec<(Pos, Pos)> = (0..self.num_tasks)
-            .map(|i| (pickups[i % pickups.len()], dropoffs[(i * 3 + 1) % dropoffs.len()]))
+            .map(|i| {
+                (
+                    pickups[i % pickups.len()],
+                    dropoffs[(i * 3 + 1) % dropoffs.len()],
+                )
+            })
             .collect();
 
         for &n_robots in &self.scales {
@@ -68,7 +111,11 @@ impl ComparativeBenchmark {
                 for y in 0..self.grid_height {
                     for x in 0..self.grid_width {
                         let p = Pos::new(x, y);
-                        if grid.is_walkable(p) && starts.len() < n_robots && !pickups.contains(&p) && !starts.contains(&p) {
+                        if grid.is_walkable(p)
+                            && starts.len() < n_robots
+                            && !pickups.contains(&p)
+                            && !starts.contains(&p)
+                        {
                             starts.push(p);
                         }
                     }
@@ -86,6 +133,10 @@ impl ComparativeBenchmark {
                 kill_robot_at: None,
                 block_cell_at: None,
                 start_positions: starts.clone(),
+                use_neural_guidance: self.use_neural_guidance,
+                use_learned_bids: self.use_learned_bids,
+                task_seed: None,
+                guidance_policy: self.guidance_policy,
             };
             let mut dist_runner = SimRunner::new(dist_config);
             let dist_res = dist_runner.run().await;
@@ -117,6 +168,9 @@ impl ComparativeBenchmark {
                 centralized_makespan: cent_res.makespan,
                 centralized_collisions: cent_res.collisions,
                 distributed_throughput_ratio: ratio,
+                distributed_plan_expansions: dist_res.plan_expansions,
+                guided_plan_expansions: dist_res.guided_plan_expansions,
+                learned_bids: dist_res.learned_bids,
             });
         }
 

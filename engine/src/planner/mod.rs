@@ -5,5 +5,6 @@ pub use reservations::{
     ConflictType, IntentRecord, PeerConflict, ReservationTable, SpaceTimeConstraints,
 };
 pub use space_time_a_star::{
-    kinematic_heuristic, orientation_between, plan, plan_with_orientation,
+    NEURAL_FALLBACK_EXPANSIONS, PlanStats, kinematic_heuristic, orientation_between, plan,
+    plan_with_orientation, plan_with_orientation_stats,
 };

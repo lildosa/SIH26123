@@ -1,6 +1,6 @@
 use sih26123::negotiator::should_yield_lamport;
-use sih26123::node::actor::RobotActor;
 use sih26123::network::InMemoryBus;
+use sih26123::node::actor::RobotActor;
 use sih26123::protocol::{ConflictMsg, Envelope, FleetMessage, HeartbeatMsg, IntentMsg};
 use sih26123::sim::runner::SimEnvironment;
 use sih26123::world::{GridMap, Pos};
@@ -19,11 +19,23 @@ fn test_lamport_clock_increments_on_send() {
     let mut robot = make_actor(1, Pos::new(0, 0), &bus, env);
 
     assert_eq!(robot.lamport_clock, 0);
-    robot.send(FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }));
-    assert_eq!(robot.lamport_clock, 1, "Send must increment local Lamport clock");
+    robot.send(FleetMessage::Heartbeat(HeartbeatMsg {
+        tick: 0,
+        battery: 1.0,
+    }));
+    assert_eq!(
+        robot.lamport_clock, 1,
+        "Send must increment local Lamport clock"
+    );
 
-    robot.send(FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }));
-    robot.send(FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }));
+    robot.send(FleetMessage::Heartbeat(HeartbeatMsg {
+        tick: 0,
+        battery: 1.0,
+    }));
+    robot.send(FleetMessage::Heartbeat(HeartbeatMsg {
+        tick: 0,
+        battery: 1.0,
+    }));
     assert_eq!(robot.lamport_clock, 3, "Each send increments by exactly 1");
 
     let outbox = &robot.outbox;
@@ -31,7 +43,11 @@ fn test_lamport_clock_increments_on_send() {
     assert_eq!(outbox[0].lamport_ts, 1);
     assert_eq!(outbox[1].lamport_ts, 2);
     assert_eq!(outbox[2].lamport_ts, 3);
-    assert_eq!(outbox[0].lamport_ts, robot.lamport_clock - 2, "Envelope stamps must be monotonically increasing");
+    assert_eq!(
+        outbox[0].lamport_ts,
+        robot.lamport_clock - 2,
+        "Envelope stamps must be monotonically increasing"
+    );
 }
 
 #[test]
@@ -44,7 +60,10 @@ fn test_lamport_clock_merges_on_receive() {
         sender_id: 2,
         seq: 1,
         lamport_ts: 7,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
+        payload: FleetMessage::Heartbeat(HeartbeatMsg {
+            tick: 0,
+            battery: 1.0,
+        }),
     };
 
     robot.decide_phase(vec![incoming]);
@@ -71,7 +90,10 @@ fn test_lamport_clock_local_events_overtake_incoming() {
         sender_id: 2,
         seq: 1,
         lamport_ts: 2,
-        payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
+        payload: FleetMessage::Heartbeat(HeartbeatMsg {
+            tick: 0,
+            battery: 1.0,
+        }),
     }]);
     assert_eq!(robot.lamport_clock, 5);
 
@@ -81,7 +103,10 @@ fn test_lamport_clock_local_events_overtake_incoming() {
             sender_id: 3,
             seq,
             lamport_ts: 2,
-            payload: FleetMessage::Heartbeat(HeartbeatMsg { tick: 0, battery: 1.0 }),
+            payload: FleetMessage::Heartbeat(HeartbeatMsg {
+                tick: 0,
+                battery: 1.0,
+            }),
         });
     }
     robot.decide_phase(fast_peer_mailbox);
@@ -115,7 +140,10 @@ fn test_lamport_intent_stamp_recorded_on_send() {
     match &intent_env.payload {
         FleetMessage::Intent(m) => {
             assert_eq!(m.lamport_ts, robot.current_intent_lamport);
-            assert!(m.lamport_ts > 0, "Intent must carry a positive Lamport stamp");
+            assert!(
+                m.lamport_ts > 0,
+                "Intent must carry a positive Lamport stamp"
+            );
         }
         _ => unreachable!(),
     }
@@ -139,28 +167,58 @@ fn test_intent_lamport_propagates_to_reservation_record() {
 
 #[test]
 fn test_lamport_higher_priority_wins() {
-    assert!(!should_yield_lamport(5, 1, 100, 9, 2, 999), "Priority 1 must beat priority 2 regardless of lamport");
-    assert!(should_yield_lamport(5, 2, 999, 9, 1, 1), "Lower priority must yield to higher priority regardless of lamport");
+    assert!(
+        !should_yield_lamport(5, 1, 100, 9, 2, 999),
+        "Priority 1 must beat priority 2 regardless of lamport"
+    );
+    assert!(
+        should_yield_lamport(5, 2, 999, 9, 1, 1),
+        "Lower priority must yield to higher priority regardless of lamport"
+    );
 }
 
 #[test]
 fn test_lamport_equal_priority_older_timestamp_wins() {
-    assert!(!should_yield_lamport(5, 1, 3, 9, 1, 7), "Older (smaller) lamport wins on equal priority");
-    assert!(should_yield_lamport(5, 1, 7, 9, 1, 3), "Newer (larger) lamport yields on equal priority");
+    assert!(
+        !should_yield_lamport(5, 1, 3, 9, 1, 7),
+        "Older (smaller) lamport wins on equal priority"
+    );
+    assert!(
+        should_yield_lamport(5, 1, 7, 9, 1, 3),
+        "Newer (larger) lamport yields on equal priority"
+    );
 }
 
 #[test]
 fn test_lamport_equal_priority_and_timestamp_lower_id_wins() {
-    assert!(!should_yield_lamport(5, 1, 4, 9, 1, 4), "Lower id wins on equal priority and lamport");
-    assert!(should_yield_lamport(9, 1, 4, 5, 1, 4), "Higher id yields on equal priority and lamport");
+    assert!(
+        !should_yield_lamport(5, 1, 4, 9, 1, 4),
+        "Lower id wins on equal priority and lamport"
+    );
+    assert!(
+        should_yield_lamport(9, 1, 4, 5, 1, 4),
+        "Higher id yields on equal priority and lamport"
+    );
 }
 
 #[test]
 fn test_lamport_arbitration_full_ordering() {
-    assert!(!should_yield_lamport(1, 1, 5, 2, 1, 5), "Self case: identical everything resolves by id");
-    assert!(should_yield_lamport(2, 1, 5, 1, 1, 5), "Id 2 yields to id 1 when tied");
-    assert!(!should_yield_lamport(2, 1, 1, 1, 1, 9), "Older lamport beats id ordering");
-    assert!(should_yield_lamport(1, 2, 0, 2, 1, 999), "Priority dominates lamport and id");
+    assert!(
+        !should_yield_lamport(1, 1, 5, 2, 1, 5),
+        "Self case: identical everything resolves by id"
+    );
+    assert!(
+        should_yield_lamport(2, 1, 5, 1, 1, 5),
+        "Id 2 yields to id 1 when tied"
+    );
+    assert!(
+        !should_yield_lamport(2, 1, 1, 1, 1, 9),
+        "Older lamport beats id ordering"
+    );
+    assert!(
+        should_yield_lamport(1, 2, 0, 2, 1, 999),
+        "Priority dominates lamport and id"
+    );
 }
 
 #[test]
@@ -214,7 +272,10 @@ fn test_actor_equal_priority_older_lamport_wins_despite_larger_id() {
     let yielded = robot.outbox[outbox_before..].iter().any(|e| {
         matches!(&e.payload, FleetMessage::Yield(m) if m.to_robot == 1 && m.yielded_intent_seq == 5)
     });
-    assert!(!yielded, "Older Lamport (3) must beat newer (8) despite larger id 9 > 1");
+    assert!(
+        !yielded,
+        "Older Lamport (3) must beat newer (8) despite larger id 9 > 1"
+    );
 
     // Reverse: actor 9 now holds NEWER intent, peer holds OLDER -> must yield.
     let bus2 = InMemoryBus::new();
@@ -255,7 +316,10 @@ fn test_actor_equal_priority_older_lamport_wins_despite_larger_id() {
     let yielded2 = robot2.outbox[before2..].iter().any(|e| {
         matches!(&e.payload, FleetMessage::Yield(m) if m.to_robot == 1 && m.yielded_intent_seq == 5)
     });
-    assert!(yielded2, "Newer Lamport (8) must yield to older (3) even with equal priority");
+    assert!(
+        yielded2,
+        "Newer Lamport (8) must yield to older (3) even with equal priority"
+    );
 }
 
 #[test]
@@ -290,7 +354,10 @@ fn test_conflict_unknown_version_yields_conservatively() {
     let yielded = robot.outbox[before..]
         .iter()
         .any(|e| matches!(&e.payload, FleetMessage::Yield(_)));
-    assert!(yielded, "Unknown challenger version with legacy stamp must yield conservatively");
+    assert!(
+        yielded,
+        "Unknown challenger version with legacy stamp must yield conservatively"
+    );
 }
 
 #[test]

@@ -80,7 +80,8 @@ engine/src/
 +-- planner/        # Space-Time A*, Turn-Delay Cost Matrix, and reservation tables
 +-- auction/        # Contract Net Protocol and multi-factor cost evaluation
 +-- negotiator/     # Wait-For-Graph, cycle detection, and priority arbitration
-+-- sim/            # 5-Phase deterministic synchronous execution loop
++-- ai/             # Neural A* guidance (tract-onnx) + LinUCB adaptive-bid bandit
++-- sim/            # 5-Phase deterministic synchronous execution loop + batch sweeps
 +-- baseline/       # Centralized Conflict-Based Search (CBS) reference model
 +-- metrics/        # Empirical benchmark collector and performance comparison engine
 +-- dashboard/      # Axum WebSocket telemetry broadcast and Three.js WebGL twin
@@ -184,7 +185,28 @@ The AMR with the lowest calculated cost wins the mission. Ties are resolved dete
 
 ---
 
-### 3.4 Conflict Negotiation & Wait-For-Graph Cycle Arbitration
+### 3.4 Edge-AI Layer: Neural Guidance & Adaptive Bidding (`engine/src/ai/`)
+
+The engine embeds two optional, independently toggleable Edge-AI components. Both are **advisory only**: hard vertex/edge reservations, directional edge-swap checks, and Lamport arbitration are enforced identically whether the models are on or off (ISO 3691-4 invariants are model-independent).
+
+#### Neural A* Guidance (Track 1, `ai/guidance.rs`)
+* A 5-layer dilated fully-convolutional network (**exactly 48,161 parameters**, 194 KB FP32 ONNX, embedded in the binary via `include_bytes!`) predicts the **obstacle-detour residual** — how much worse than straight-line the true cost-to-go is due to shelves — over a fixed 32×32 window.
+* Inference computes $h = \text{kinematic} + \text{residual} \cdot 32$ and only reorders the A* BinaryHeap open set. One forward pass per planning call (tract-onnx static-shape compiled plan); the search loop itself does O(1) array lookups.
+* **Safety fallback:** if the guided search exceeds **800 expansions**, the planner immediately falls back to pure kinematic A* (`GuidancePolicy` telemetry reports `used_fallback`).
+* **Measured impact:** at 32×32 / 8 AMRs, unguided Manhattan-A* completes **0/10 tasks** within 300 ticks; guided runs complete **8/10 with 0 collisions and 0 fallbacks**.
+* **Hybrid routing (`GuidancePolicy::Auto`):** guidance engages only in the large-dense regime (grid side ≥ 32 **and** ≥ 0.7 robots per 100 cells) where the 360-run sweep shows it wins; elsewhere the planner stays on the deterministic fast path. The sweep's decisive cell: 32×32/8 AMRs — auto **85%** completion vs static **65%**, neural-always 80%.
+
+#### LinUCB Adaptive Bidding (Track 2, `ai/bandit.rs`)
+* Each robot runs a disjoint-model contextual bandit (d = 6 context features, **4 discrete weight-profile arms** — the conservative arm reproduces the static auction defaults exactly) that learns how to weight its own bid-cost features. Rank-1 closed-form updates, zero heap allocation, ~3.6 KB state.
+* **Auction-feedback handling:** UCB1-style warm start counted on bid *selections* (first-price auctions only feed winners), a bounded 8-slot outstanding-bid ring for concurrent auctions, win → completion-speed reward at dropoff, loss → small negative reward when the Award goes elsewhere. Every selection therefore produces a learning signal.
+* **Measured:** **204 ns** choose / **66 ns** update per decision (spec budget: 650 ns); 10-seed sweeps show the most consistent completion-rate gains at mid/large fleets (e.g. 15×15/6 AMRs: 82% → 94%).
+* Telemetry: `SimResult.bandit_arm_counts` / `bandit_arm_reward_sum` aggregate per-arm learning across the fleet.
+
+**Enabling:** headless — `sim --neural-guidance`, `--learned-bids`, `--guidance-policy auto|always`, `--seed N`; batch statistics — `batch --robots 4,6,8 --sizes 15,24,32 --seeds 10 --configs static,learned,neural,full,auto,autofull` piped through `scripts/aggregate_stats.py`; live — the dashboard **Edge-AI Mode (live)** card flips the whole fleet between Deterministic and Model-Assisted mid-run (`POST /api/ai-mode`), with the 800-expansion fallback armed in both modes. Model training/export lives in `scripts/train_guidance_model.py` (ONNX numerically validated vs PyTorch at 1.3e-07 max abs error).
+
+---
+
+### 3.5 Conflict Negotiation & Wait-For-Graph Cycle Arbitration
 
 When multiple AMRs converge on a narrow single-lane aisle or intersection, local space-time reservations may conflict. Contention is arbitrated by `engine/src/negotiator/`.
 
@@ -220,7 +242,7 @@ To enable deadlock cycle detection across multi-robot dependency chains without 
 
 ---
 
-### 3.5 Network Transport, Deduplication & Fault Tolerance
+### 3.6 Network Transport, Deduplication & Fault Tolerance
 
 The physical wireless channel in industrial plants exhibits high RF noise, packet reflection, and intermittent dropouts. The network layer (`engine/src/network/`) guarantees delivery over lossy UDP multicast (`239.0.26.123:26123`).
 

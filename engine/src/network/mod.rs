@@ -4,7 +4,7 @@ pub mod in_memory;
 pub mod udp_mesh;
 
 pub use faulty::FaultyNetwork;
-pub use fec::{AdaptiveBurstTransport, FecDecoder, BURST_REPLICATION};
+pub use fec::{AdaptiveBurstTransport, BURST_REPLICATION, FecDecoder};
 pub use in_memory::{InMemoryBus, InMemoryNode};
 pub use udp_mesh::{UdpMeshConfig, UdpMeshNode};
 
