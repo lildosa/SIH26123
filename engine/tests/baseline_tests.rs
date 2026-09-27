@@ -1,4 +1,6 @@
-use sih26123::baseline::{CentralizedConfig, CentralizedRunner, cbs_plan};
+use sih26123::baseline::{
+    CentralizedConfig, CentralizedRunner, StopAndWaitConfig, StopAndWaitRunner, cbs_plan,
+};
 use sih26123::world::{GridMap, Pos};
 
 #[test]
@@ -54,4 +56,60 @@ fn test_centralized_runner_completes_tasks() {
 
     assert_eq!(result.collisions, 0);
     assert_eq!(result.tasks_completed, 2);
+}
+
+#[test]
+fn test_stop_and_wait_runner_zero_collisions_and_completes() {
+    // Same warehouse/task geometry the benchmark suite uses: pickups in the
+    // left third, dropoffs in the right third -> every path crosses the
+    // central aisles, so fleets genuinely overlap.
+    let grid = GridMap::generate_warehouse(15, 15, 3);
+    let mut pickups = Vec::new();
+    let mut dropoffs = Vec::new();
+    for y in 0..15 {
+        for x in 0..15 {
+            let p = Pos::new(x, y);
+            if grid.is_walkable(p) {
+                if x < 5 {
+                    pickups.push(p);
+                } else if x >= 10 {
+                    dropoffs.push(p);
+                }
+            }
+        }
+    }
+    let tasks: Vec<(Pos, Pos)> = (0..6)
+        .map(|i| (pickups[i % pickups.len()], dropoffs[(i * 3 + 1) % dropoffs.len()]))
+        .collect();
+    let starts = vec![
+        Pos::new(1, 1),
+        Pos::new(2, 2),
+        Pos::new(1, 4),
+        Pos::new(2, 5),
+    ];
+
+    let config = StopAndWaitConfig {
+        num_robots: 4,
+        grid_width: 15,
+        grid_height: 15,
+        aisle_spacing: 3,
+        tasks: tasks.clone(),
+        max_ticks: 2000,
+        start_positions: starts,
+    };
+
+    let runner = StopAndWaitRunner::new(config);
+    let result = runner.run();
+
+    assert_eq!(result.collisions, 0, "stop-and-wait must never collide");
+    assert_eq!(
+        result.tasks_completed,
+        tasks.len(),
+        "stop-and-wait baseline must complete all tasks"
+    );
+    assert!(
+        result.makespan > 0 && result.makespan <= 2000,
+        "makespan {} out of range",
+        result.makespan
+    );
 }
