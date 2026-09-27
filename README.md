@@ -20,6 +20,38 @@ In high-density industrial and defense logistics warehouses, centralized fleet m
 
 ---
 
+## 1.5 ⚡ Edge-AI Highlights (New — Beyond the Submitted PPT)
+
+> **TL;DR for evaluators:** THADAM now ships two trained AI components that run **entirely on-robot in pure Rust** — no Python runtime, no cloud calls, no IPC. One *steers navigation*; the other *learns how to bid for tasks*. Both are advisory: all ISO 3691-4 collision-avoidance invariants are enforced identically with AI on or off (76/76 automated tests, zero collisions in 360 benchmarked runs).
+
+| | 🧭 Neural A* Guidance (Navigation) | 🎯 LinUCB Adaptive Bidding (Task Allocation) |
+|---|---|---|
+| **What it is** | 48,161-parameter neural network (~48 KB fp32 / 194 KB ONNX, **embedded in the binary**) predicts an obstacle-detour cost-to-go heatmap over a 32×32 window | Contextual bandit (6 context features, 4 bid-weight profiles) per robot that learns **how to weight its own auction bids** from win/loss outcomes |
+| **How it helps** | Reorders the Space-Time A* open set toward detour-friendly cells | Starts exactly at static-default behavior; adapts weights only on evidence (conservative arm = static weights) |
+| **Hard safety** | If search exceeds **800 expansions**, AI is switched off mid-search and pure kinematic A* finishes the plan | Reward only; the auction itself, Lamport arbitration, and award rules are untouched |
+| **Speed** | One inference per planning call (< 0.5 ms class, ARM target) | **204 ns** per bid decision, 66 ns per learning update |
+| **Measured impact** | 32×32 / 8 AMRs: unguided Manhattan-A* completes **0/10 tasks** in 300 ticks → guided **8/10, 0 collisions** | 15×15 / 6 AMRs: task completion **82% → 94%** over 10 seeds; best-or-parity in most of the 36-cell sweep |
+
+**Hybrid routing — the practical setting.** The sweep (10 seeds × 3 grid sizes × 3 fleet sizes × 4 configs = 360 runs) showed the neural guide is decisive exactly in **large, crowded warehouses** and neutral-to-negative in small ones. `GuidancePolicy::Auto` encodes that boundary: guidance engages only when grid side ≥ 32 **and** density ≥ 0.7 robots/100 cells — yielding the best of both worlds at 32×32/8 AMRs (**85% completion, 5.3k expansions** vs 65% / 20.7k for static A*).
+
+**See it live (30 seconds):**
+```bash
+make start                                     # open http://localhost:3000
+# → "Edge-AI Mode (live)" card: flip Deterministic ⇄ Model-Assisted mid-run
+#   and watch makespan/throughput respond on the next planning tick
+```
+
+Headless + reproducible:
+```bash
+cd engine
+cargo run --release -- sim --robots 8 --width 32 --height 32 --tasks 10 \n  --neural-guidance --learned-bids --seed 3      # AI-assisted run
+cargo run --release -- batch --robots 4,6,8 --sizes 15,24,32 --seeds 10 \n  --configs static,learned,neural,full,auto,autofull | python3 ../scripts/aggregate_stats.py
+```
+
+Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn) · Training pipeline: [`scripts/train_guidance_model.py`](scripts/train_guidance_model.py) · Deep dive: [`docs/ARCHITECTURE.md §3.4`](docs/ARCHITECTURE.md) · Engine-side inference: [`engine/src/ai/guidance.rs`](engine/src/ai/guidance.rs)
+
+---
+
 ## 2. System Architecture & Core Innovations
 
 ```
