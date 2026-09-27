@@ -23,15 +23,25 @@ async fn test_scenario_narrow_corridor_chokepoint() {
         kill_robot_at: None,
         block_cell_at: None,
         start_positions: vec![Pos::new(0, 0), Pos::new(9, 4)],
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
 
     let mut runner = SimRunner::new(config);
     let result = runner.run().await;
 
-    assert_eq!(result.collisions, 0, "Chokepoint must be navigated with 0 collisions");
+    assert_eq!(
+        result.collisions, 0,
+        "Chokepoint must be navigated with 0 collisions"
+    );
     assert_eq!(result.vertex_collisions, 0);
     assert_eq!(result.edge_swap_collisions, 0);
-    assert!(result.tasks_completed >= 1, "At least 1 task completed in chokepoint");
+    assert!(
+        result.tasks_completed >= 1,
+        "At least 1 task completed in chokepoint"
+    );
 }
 
 #[tokio::test]
@@ -46,13 +56,23 @@ async fn test_scenario_blocked_aisle_replan() {
         kill_robot_at: None,
         block_cell_at: Some((Pos::new(3, 0), 4)), // Injects obstacle in front of path at tick 4
         start_positions: vec![Pos::new(1, 0), Pos::new(1, 1)],
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
 
     let mut runner = SimRunner::new(config);
     let result = runner.run().await;
 
-    assert_eq!(result.collisions, 0, "Blocked aisle replanned with zero collisions");
-    assert!(result.tasks_completed >= 1, "Completed task via alternative route");
+    assert_eq!(
+        result.collisions, 0,
+        "Blocked aisle replanned with zero collisions"
+    );
+    assert!(
+        result.tasks_completed >= 1,
+        "Completed task via alternative route"
+    );
 }
 
 #[tokio::test]
@@ -70,11 +90,21 @@ async fn test_scenario_robot_breakdown_task_recovery() {
         kill_robot_at: Some((2, 6)), // Kill Robot 2 at tick 6
         block_cell_at: None,
         start_positions: vec![Pos::new(1, 0), Pos::new(2, 0), Pos::new(3, 0)],
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
 
     let mut runner = SimRunner::new(config);
     let result = runner.run().await;
 
-    assert_eq!(result.collisions, 0, "Breakdown handled with zero collisions");
-    assert!(result.tasks_completed >= 1, "Task reallocated and completed by surviving robots");
+    assert_eq!(
+        result.collisions, 0,
+        "Breakdown handled with zero collisions"
+    );
+    assert!(
+        result.tasks_completed >= 1,
+        "Task reallocated and completed by surviving robots"
+    );
 }

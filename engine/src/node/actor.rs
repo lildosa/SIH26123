@@ -1,9 +1,10 @@
+use crate::ai::{LinUcbBandit, SharedGuidance, arm_weights, bid_context, completion_reward};
 use crate::auction::{Auction, AuctionConfig, compute_bid_cost};
 use crate::negotiator::{WaitForGraph, resolve_deadlocks, should_yield_lamport};
 use crate::network::Network;
 use crate::node::environment::Environment;
 use crate::node::state::RobotState;
-use crate::planner::{ReservationTable, orientation_between, plan_with_orientation};
+use crate::planner::{ReservationTable, orientation_between, plan_with_orientation_stats};
 use crate::protocol::{
     AuctionOpenMsg, AwardMsg, BidMsg, ConflictMsg, Envelope, FleetMessage, HeartbeatMsg, IntentMsg,
     Orientation, PoseMsg, RobotId, RobotStatus, SeqNum, TaskId, TaskState, TaskStatusMsg, Tick,
@@ -32,6 +33,16 @@ pub struct RobotTelemetry {
 /// All robots share this tier so Lamport timestamps break ties fairly (FCFS),
 /// with RobotId as the final deterministic fallback.
 pub const REGULAR_INTENT_PRIORITY: u64 = 1;
+
+/// An adaptive bid awaiting its auction outcome (bounded ring slot).
+#[derive(Debug, Clone, Copy)]
+pub struct OutstandingBid {
+    pub task_id: TaskId,
+    pub arm: usize,
+    pub ctx: [f32; 6],
+    pub assigned_at_tick: u64,
+    pub min_travel: u64,
+}
 
 pub struct RobotActor {
     pub id: RobotId,
@@ -71,6 +82,29 @@ pub struct RobotActor {
 
     pub outbox: Vec<Envelope>,
     pub desired_next_pos: Option<Pos>,
+
+    /// Optional neural A* guidance handle (None = pure kinematic planner).
+    /// Default off so every deterministic test assertion stays green.
+    pub guidance: Option<SharedGuidance>,
+    /// Adaptive bidding bandit (None = static AuctionConfig weights).
+    pub bid_bandit: Option<LinUcbBandit>,
+    /// Outstanding adaptive bids (ring of 8): every selection gets an
+    /// eventual update — win → completion-speed reward at task completion,
+    /// loss → small negative signal when the Award goes elsewhere.
+    pub outstanding_bids: [Option<OutstandingBid>; 8],
+    pub outstanding_bids_next: usize,
+    /// Assignment tick + Manhattan lower bound of the active task (reward shaping).
+    pub assigned_at_tick: u64,
+    pub pending_min_travel: u64,
+    /// Adaptive bids placed (telemetry).
+    pub learned_bids: usize,
+    /// Open-set expansions across every planning call (guided or not) —
+    /// the fair kinematic-vs-neural comparison denominator.
+    pub plan_expansions: usize,
+    /// Cumulative neural-guidance telemetry (guidance-consulted plans only).
+    pub neural_plans: usize,
+    pub neural_expansions: usize,
+    pub neural_fallbacks: usize,
 
     pub telemetry_tx: watch::Sender<RobotTelemetry>,
     pub telemetry_rx: watch::Receiver<RobotTelemetry>,
@@ -135,8 +169,122 @@ impl RobotActor {
             outbox: Vec::new(),
             desired_next_pos: None,
 
+            guidance: None,
+            bid_bandit: None,
+            outstanding_bids: [const { None }; 8],
+            outstanding_bids_next: 0,
+            assigned_at_tick: 0,
+            pending_min_travel: 0,
+            learned_bids: 0,
+            plan_expansions: 0,
+            neural_plans: 0,
+            neural_expansions: 0,
+            neural_fallbacks: 0,
+
             telemetry_tx,
             telemetry_rx,
+        }
+    }
+
+    /// Bid cost via the LinUCB bandit when adaptive bidding is enabled,
+    /// mirroring `compute_bid_cost` context-for-context otherwise.
+    /// The chosen arm replaces the static feature weights; the tier
+    /// adjustment stays deterministic (emergencies still preempt).
+    fn adaptive_bid_cost(
+        &mut self,
+        robot_pos: crate::world::Pos,
+        robot_battery: f32,
+        pickup: crate::world::Pos,
+        dropoff: crate::world::Pos,
+        congestion_at_pickup: f64,
+        current_task_remaining: usize,
+        task_deadline: Option<Tick>,
+        current_tick: Tick,
+    ) -> (f64, usize, [f32; 6]) {
+        let travel = robot_pos.manhattan_distance(&pickup) + pickup.manhattan_distance(&dropoff);
+        let travel_norm = travel as f64 / (self.grid.width + self.grid.height) as f64;
+        let active_fleet = self.peer_poses.len() + 1;
+
+        let ctx = bid_context(
+            travel_norm,
+            robot_battery,
+            current_task_remaining,
+            congestion_at_pickup,
+            task_deadline.map(|dl| dl.saturating_sub(current_tick)),
+            active_fleet,
+        );
+        let arm = self
+            .bid_bandit
+            .as_mut()
+            .map(|b| b.choose_arm(&ctx))
+            .unwrap_or(0);
+        let w = arm_weights(arm);
+        let config = AuctionConfig {
+            w_travel: w[0],
+            w_congestion: w[1],
+            w_battery: w[2],
+            w_delay: w[3],
+            w_deadline: w[4],
+            ..AuctionConfig::default()
+        };
+        let cost = compute_bid_cost(
+            &config,
+            robot_pos,
+            robot_battery,
+            pickup,
+            dropoff,
+            congestion_at_pickup,
+            current_task_remaining,
+            task_deadline,
+            current_tick,
+        );
+        (cost, arm, ctx)
+    }
+
+    /// Records an adaptive bid in the bounded ring (oldest slot overwritten
+    /// after 8 concurrent bids; auctions resolve within ~7 ticks so this is
+    /// generous headroom).
+    fn record_outstanding_bid(
+        &mut self,
+        task_id: TaskId,
+        arm: usize,
+        ctx: [f32; 6],
+        min_travel: u64,
+    ) {
+        let slot = self.outstanding_bids_next;
+        self.outstanding_bids_next = (slot + 1) % self.outstanding_bids.len();
+        self.outstanding_bids[slot] = Some(OutstandingBid {
+            task_id,
+            arm,
+            ctx,
+            assigned_at_tick: self.current_tick,
+            min_travel,
+        });
+    }
+
+    /// Settles a bid's learning signal: lost auctions get a small negative
+    /// reward; wins are rewarded at completion by normalized speed.
+    fn resolve_outstanding_bid(&mut self, task_id: TaskId, won: bool, completion_tick: Tick) {
+        let mut slot_idx = None;
+        for (i, slot) in self.outstanding_bids.iter().enumerate() {
+            if let Some(b) = slot {
+                if b.task_id == task_id {
+                    slot_idx = Some(i);
+                    break;
+                }
+            }
+        }
+        if let Some(i) = slot_idx {
+            let bid = self.outstanding_bids[i].take().unwrap();
+            if let (Some(bandit), Some(arm)) = (self.bid_bandit.as_mut(), Some(bid.arm)) {
+                let reward = if won {
+                    let actual = completion_tick.saturating_sub(bid.assigned_at_tick);
+                    completion_reward(actual, bid.min_travel)
+                } else {
+                    -0.05
+                };
+                bandit.update(arm, &bid.ctx, reward);
+            }
         }
     }
 
@@ -326,8 +474,7 @@ impl RobotActor {
                     }
 
                     if self.state == RobotState::Idle && self.assigned_task.is_none() {
-                        let cost = compute_bid_cost(
-                            &self.auction_config,
+                        let (cost, arm, ctx) = self.adaptive_bid_cost(
                             self.pos,
                             self.battery,
                             m.pickup,
@@ -337,6 +484,13 @@ impl RobotActor {
                             Some(m.deadline_tick),
                             self.current_tick,
                         );
+                        if self.bid_bandit.is_some() {
+                            self.learned_bids += 1;
+                            let min_travel = (self.pos.manhattan_distance(&m.pickup)
+                                + m.pickup.manhattan_distance(&m.dropoff))
+                                as u64;
+                            self.record_outstanding_bid(m.task_id, arm, ctx, min_travel);
+                        }
                         self.send(FleetMessage::Bid(BidMsg {
                             task_id: m.task_id,
                             cost,
@@ -350,6 +504,11 @@ impl RobotActor {
                 }
                 FleetMessage::Award(m) => {
                     self.pending_auctions.remove(&m.task_id);
+                    // Lost auction: small negative signal for the arm/context we
+                    // bid with (clipped so it can't outweigh a win's reward).
+                    if m.winner_id != self.id {
+                        self.resolve_outstanding_bid(m.task_id, false, 0);
+                    }
                     if let Some(task) = self.known_tasks.get_mut(&m.task_id) {
                         task.assigned_to = Some(m.winner_id);
                         task.status = TaskState::Assigned;
@@ -359,6 +518,11 @@ impl RobotActor {
                             if let Some(task) = self.known_tasks.get(&m.task_id).cloned() {
                                 self.assigned_task =
                                     Some((task.task_id, task.pickup, task.dropoff));
+                                self.assigned_at_tick = self.current_tick;
+                                self.pending_min_travel =
+                                    (self.pos.manhattan_distance(&task.pickup)
+                                        + task.pickup.manhattan_distance(&task.dropoff))
+                                        as u64;
                                 self.state = RobotState::Planning {
                                     task_id: task.task_id,
                                     pickup: task.pickup,
@@ -441,8 +605,7 @@ impl RobotActor {
                         2,
                         self.id,
                     );
-                    let my_cost = compute_bid_cost(
-                        &self.auction_config,
+                    let (my_cost, arm, ctx) = self.adaptive_bid_cost(
                         self.pos,
                         self.battery,
                         task.pickup,
@@ -452,6 +615,13 @@ impl RobotActor {
                         Some(self.current_tick + 2),
                         self.current_tick,
                     );
+                    if self.bid_bandit.is_some() {
+                        self.learned_bids += 1;
+                        let min_travel = (self.pos.manhattan_distance(&task.pickup)
+                            + task.pickup.manhattan_distance(&task.dropoff))
+                            as u64;
+                        self.record_outstanding_bid(task.task_id, arm, ctx, min_travel);
+                    }
                     auction.add_bid(
                         self.id,
                         &BidMsg {
@@ -528,6 +698,10 @@ impl RobotActor {
                 if let Some(task) = self.known_tasks.get(&award.task_id).cloned() {
                     self.assigned_task = Some((task.task_id, task.pickup, task.dropoff));
                     self.carrying_task = None;
+                    self.assigned_at_tick = self.current_tick;
+                    self.pending_min_travel = (self.pos.manhattan_distance(&task.pickup)
+                        + task.pickup.manhattan_distance(&task.dropoff))
+                        as u64;
                     self.state = RobotState::Planning {
                         task_id: task.task_id,
                         pickup: task.pickup,
@@ -568,7 +742,7 @@ impl RobotActor {
                     100,
                 );
 
-                if let Some(path) = plan_with_orientation(
+                let planned = plan_with_orientation_stats(
                     &planning_grid,
                     self.id,
                     self.pos,
@@ -577,7 +751,17 @@ impl RobotActor {
                     goal,
                     &constraints,
                     200,
-                ) {
+                    self.guidance.as_ref(),
+                );
+                if let Some((path, stats)) = planned {
+                    self.plan_expansions += stats.expansions;
+                    if stats.used_guidance {
+                        self.neural_plans += 1;
+                        self.neural_expansions += stats.expansions;
+                        if stats.used_fallback {
+                            self.neural_fallbacks += 1;
+                        }
+                    }
                     self.current_intent_seq = self.next_seq;
                     self.current_intent_priority = REGULAR_INTENT_PRIORITY;
                     self.current_intent_lamport = self.lamport_clock + 1;
@@ -671,6 +855,9 @@ impl RobotActor {
                             if let Some(task) = self.known_tasks.get(&task_id).cloned() {
                                 self.send(FleetMessage::TaskStatus(task));
                             }
+                            // LinUCB reward: completion speed for the winning
+                            // bid's arm/context (E2E learning signal).
+                            self.resolve_outstanding_bid(task_id, true, self.current_tick);
                         }
                     } else {
                         self.state = RobotState::Idle;

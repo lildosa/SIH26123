@@ -21,7 +21,12 @@ async fn test_multi_robot_multi_task_zero_collisions() {
     }
 
     let tasks: Vec<(Pos, Pos)> = (0..5)
-        .map(|i| (pickups[i % pickups.len()], dropoffs[(i * 3 + 1) % dropoffs.len()]))
+        .map(|i| {
+            (
+                pickups[i % pickups.len()],
+                dropoffs[(i * 3 + 1) % dropoffs.len()],
+            )
+        })
         .collect();
 
     let mut starts = Vec::new();
@@ -44,6 +49,10 @@ async fn test_multi_robot_multi_task_zero_collisions() {
         kill_robot_at: None,
         block_cell_at: None,
         start_positions: starts,
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
 
     let mut runner = SimRunner::new(config);
@@ -51,7 +60,10 @@ async fn test_multi_robot_multi_task_zero_collisions() {
 
     assert_eq!(result.collisions, 0, "Collisions must be strictly 0");
     assert_eq!(result.vertex_collisions, 0, "Vertex collisions must be 0");
-    assert_eq!(result.edge_swap_collisions, 0, "Edge-swap collisions must be 0");
+    assert_eq!(
+        result.edge_swap_collisions, 0,
+        "Edge-swap collisions must be 0"
+    );
     assert_eq!(result.tasks_completed, 5, "All 5 tasks must be completed");
 }
 
@@ -67,13 +79,23 @@ async fn test_dynamic_obstacle_replan() {
         kill_robot_at: None,
         block_cell_at: Some((Pos::new(4, 0), 3)), // Block cell on path at tick 3
         start_positions: vec![Pos::new(1, 0), Pos::new(2, 0)],
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
 
     let mut runner = SimRunner::new(config);
     let result = runner.run().await;
 
-    assert_eq!(result.collisions, 0, "Zero collisions with dynamic obstacle");
-    assert!(result.tasks_completed >= 1, "Task completed despite obstacle");
+    assert_eq!(
+        result.collisions, 0,
+        "Zero collisions with dynamic obstacle"
+    );
+    assert!(
+        result.tasks_completed >= 1,
+        "Task completed despite obstacle"
+    );
 }
 
 #[tokio::test]
@@ -88,13 +110,21 @@ async fn test_robot_failure_task_reassignment() {
             (Pos::new(0, 3), Pos::new(14, 3)),
         ],
         max_ticks: 300,
-        kill_robot_at: Some((2, 5)), block_cell_at: None, // Kill Robot 2 at tick 5
+        kill_robot_at: Some((2, 5)),
+        block_cell_at: None, // Kill Robot 2 at tick 5
         start_positions: vec![Pos::new(1, 0), Pos::new(2, 0), Pos::new(3, 0)],
+        use_neural_guidance: false,
+        use_learned_bids: false,
+        task_seed: None,
+        guidance_policy: sih26123::sim::GuidancePolicy::Off,
     };
 
     let mut runner = SimRunner::new(config);
     let result = runner.run().await;
 
     assert_eq!(result.collisions, 0, "Zero collisions during peer kill");
-    assert!(result.tasks_completed >= 1, "Surviving robots complete tasks");
+    assert!(
+        result.tasks_completed >= 1,
+        "Surviving robots complete tasks"
+    );
 }

@@ -1,5 +1,6 @@
-use crate::network::in_memory::{InMemoryBus, InMemoryNode};
+use crate::ai::{LinUcbBandit, SharedGuidance};
 use crate::network::Network;
+use crate::network::in_memory::{InMemoryBus, InMemoryNode};
 use crate::node::actor::RobotActor;
 use crate::node::environment::Environment;
 use crate::node::state::RobotState;
@@ -8,6 +9,43 @@ use crate::world::{Cell, GridMap, Pos};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+
+/// How neural A* guidance is engaged for a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GuidancePolicy {
+    /// Guidance off (default; deterministic legacy behavior).
+    #[default]
+    Off,
+    /// Guidance always on (falls back internally past 800 expansions).
+    Always,
+    /// Hybrid routing: engage guidance only in the high-congestion regime
+    /// where the learned detour heuristic measurably wins (large grid AND
+    /// dense fleet); pure kinematic planning elsewhere.
+    Auto,
+}
+
+impl GuidancePolicy {
+    /// Routing rule from the 360-run sweep (10 seeds × sizes × fleets):
+    /// the only statistically decisive neural-guidance win is the large,
+    /// dense regime — 32×32 with ≥ 0.7 robots per 100 cells (8/1024 = 0.78
+    /// engaged, 6/1024 = 0.59 did not; 85% vs 62% completion). Smaller or
+    /// sparser regimes are within seed noise, so Auto conservatively keeps
+    /// pure kinematic planning there.
+    ///
+    /// Density uses division-free integer math (robots/1000 vs cells/1000)
+    /// to avoid integer-division floor traps.
+    pub fn engages(&self, num_robots: usize, grid_width: usize, grid_height: usize) -> bool {
+        match self {
+            GuidancePolicy::Off => false,
+            GuidancePolicy::Always => true,
+            GuidancePolicy::Auto => {
+                let cells = grid_width.max(grid_height) >= 32;
+                let dense = num_robots * 1000 >= 7 * (grid_width * grid_height).max(1);
+                cells && dense
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimConfig {
@@ -20,6 +58,20 @@ pub struct SimConfig {
     pub kill_robot_at: Option<(RobotId, Tick)>,
     pub block_cell_at: Option<(Pos, Tick)>,
     pub start_positions: Vec<Pos>,
+    /// Opt-in neural A* guidance (advisory heuristic only). Default off.
+    #[serde(default)]
+    pub use_neural_guidance: bool,
+    /// Opt-in LinUCB adaptive bidding. Default off (static weights).
+    #[serde(default)]
+    pub use_learned_bids: bool,
+    /// Seeded task/start jitter for statistical variance. `None` keeps the
+    /// fully deterministic legacy layout (all existing tests unchanged).
+    #[serde(default)]
+    pub task_seed: Option<u64>,
+    /// Hybrid guidance routing (default: Off = legacy boolean behavior).
+    /// When `Auto`, `use_neural_guidance` is overridden per-regime.
+    #[serde(default)]
+    pub guidance_policy: GuidancePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -31,6 +83,28 @@ pub struct SimResult {
     pub tasks_completed: usize,
     pub deadlocks_resolved: usize,
     pub total_wait_ticks: usize,
+    /// Neural-guidance telemetry (0 when guidance is disabled).
+    #[serde(default)]
+    pub neural_plans: usize,
+    #[serde(default)]
+    pub neural_expansions: usize,
+    #[serde(default)]
+    pub neural_fallbacks: usize,
+    /// Open-set expansions summed over every planning call (guided or not).
+    #[serde(default)]
+    pub plan_expansions: usize,
+    /// Expansions from plans that consulted the guidance heatmap.
+    #[serde(default)]
+    pub guided_plan_expansions: usize,
+    /// Adaptive (LinUCB) bids placed across the fleet (0 when disabled).
+    #[serde(default)]
+    pub learned_bids: usize,
+    /// Task selections per bidding arm [conservative, speed, balanced, aggressive].
+    #[serde(default)]
+    pub bandit_arm_counts: [u32; 4],
+    /// Mean completion reward observed per arm.
+    #[serde(default)]
+    pub bandit_arm_reward_sum: [f32; 4],
 }
 
 pub struct SimEnvironment {
@@ -97,8 +171,37 @@ pub struct SimRunner {
     pub next_task_id: TaskId,
 }
 
+/// Tiny deterministic LCG for seeded task/start jitter (no rand dep here so
+/// the jitter is reproducible across platforms for a given seed).
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 16
+    }
+
+    fn shuffle<T>(&mut self, xs: &mut [T]) {
+        for i in (1..xs.len()).rev() {
+            let j = (self.next() % (i as u64 + 1)) as usize;
+            xs.swap(i, j);
+        }
+    }
+}
+
 impl SimRunner {
-    pub fn new(config: SimConfig) -> Self {
+    pub fn new(mut config: SimConfig) -> Self {
+        // Seeded jitter: reorder tasks and start positions so different seeds
+        // exercise different fleet/task geometry (statistical variance).
+        if let Some(seed) = config.task_seed {
+            let mut lcg = Lcg(seed);
+            lcg.shuffle(&mut config.tasks);
+            lcg.shuffle(&mut config.start_positions);
+        }
+
         let grid = Arc::new(GridMap::generate_warehouse(
             config.grid_width,
             config.grid_height,
@@ -121,13 +224,20 @@ impl SimRunner {
             let node = Arc::new(bus.register_node(robot_id));
             nodes.push(node.clone());
 
-            let mut actor = RobotActor::new(
-                robot_id,
-                start_pos,
-                grid.clone(),
-                node,
-                environment.clone(),
-            );
+            let mut actor =
+                RobotActor::new(robot_id, start_pos, grid.clone(), node, environment.clone());
+            if config.use_neural_guidance
+                || config.guidance_policy.engages(
+                    config.num_robots,
+                    config.grid_width,
+                    config.grid_height,
+                )
+            {
+                actor.guidance = SharedGuidance::global();
+            }
+            if config.use_learned_bids {
+                actor.bid_bandit = Some(LinUcbBandit::new());
+            }
 
             for (idx, &(pickup, dropoff)) in config.tasks.iter().enumerate() {
                 let task_id = (idx + 1) as TaskId;
@@ -174,7 +284,12 @@ impl SimRunner {
     }
 
     /// Reconfigures and resets fleet with new parameters preserving shared Arcs.
-    pub fn reinitialize(&mut self, config: SimConfig) {
+    pub fn reinitialize(&mut self, mut config: SimConfig) {
+        if let Some(seed) = config.task_seed {
+            let mut lcg = Lcg(seed);
+            lcg.shuffle(&mut config.tasks);
+            lcg.shuffle(&mut config.start_positions);
+        }
         let mut gt = self.environment.ground_truth.write().unwrap();
         *gt = (*self.grid).clone();
         drop(gt);
@@ -204,6 +319,18 @@ impl SimRunner {
                 node,
                 self.environment.clone(),
             );
+            if config.use_neural_guidance
+                || config.guidance_policy.engages(
+                    config.num_robots,
+                    config.grid_width,
+                    config.grid_height,
+                )
+            {
+                actor.guidance = SharedGuidance::global();
+            }
+            if config.use_learned_bids {
+                actor.bid_bandit = Some(LinUcbBandit::new());
+            }
 
             for (idx, &(pickup, dropoff)) in config.tasks.iter().enumerate() {
                 let task_id = (idx + 1) as TaskId;
@@ -403,6 +530,69 @@ impl SimRunner {
             }
         }
 
+        result.neural_plans = self.robots.iter().map(|r| r.neural_plans).sum();
+        result.neural_expansions = self.robots.iter().map(|r| r.neural_expansions).sum();
+        result.neural_fallbacks = self.robots.iter().map(|r| r.neural_fallbacks).sum();
+        result.plan_expansions = self.robots.iter().map(|r| r.plan_expansions).sum();
+        result.guided_plan_expansions = self.robots.iter().map(|r| r.neural_expansions).sum();
+        result.learned_bids = self.robots.iter().map(|r| r.learned_bids).sum();
+        for r in &self.robots {
+            if let Some(b) = &r.bid_bandit {
+                for a in 0..4 {
+                    result.bandit_arm_counts[a] =
+                        result.bandit_arm_counts[a].saturating_add(b.arm_counts[a]);
+                    result.bandit_arm_reward_sum[a] += b.arm_reward_sum[a];
+                }
+            }
+        }
+
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guidance_policy_routing_rule() {
+        // Off / Always are regime-independent.
+        assert!(!GuidancePolicy::Off.engages(8, 32, 32));
+        assert!(GuidancePolicy::Always.engages(2, 10, 10));
+
+        // Dense large regime: 8 robots on 32x32 (0.78/100 cells) -> engaged.
+        assert!(GuidancePolicy::Auto.engages(8, 32, 32));
+        // 6 robots on 32x32 (0.59/100) -> below threshold, off.
+        assert!(!GuidancePolicy::Auto.engages(6, 32, 32));
+        // Grids below 32 never engage (sweep noise), however dense.
+        assert!(!GuidancePolicy::Auto.engages(8, 15, 15));
+        assert!(!GuidancePolicy::Auto.engages(8, 24, 24));
+        assert!(!GuidancePolicy::Auto.engages(6, 24, 24));
+    }
+
+    #[test]
+    fn sim_config_defaults_keep_legacy_behavior() {
+        let config = SimConfig {
+            num_robots: 4,
+            grid_width: 15,
+            grid_height: 15,
+            aisle_spacing: 3,
+            tasks: vec![],
+            max_ticks: 100,
+            kill_robot_at: None,
+            block_cell_at: None,
+            start_positions: vec![],
+            use_neural_guidance: false,
+            use_learned_bids: false,
+            task_seed: None,
+            guidance_policy: GuidancePolicy::Off,
+        };
+        assert!(!config.use_neural_guidance);
+        assert_eq!(config.guidance_policy, GuidancePolicy::Off);
+        assert!(!config.guidance_policy.engages(
+            config.num_robots,
+            config.grid_width,
+            config.grid_height
+        ));
     }
 }
