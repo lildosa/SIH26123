@@ -1,273 +1,115 @@
-# THADAM: Trajectory-aware Heuristics for Autonomous Decentralized AMR Mesh
+# THADAM: Trajectory-Aware Heuristics for Autonomous Decentralized AMR Mesh
 
-> **Distributed Edge-AI AMR Fleet Coordination Engine**  
-> **Origin Context:** Smart India Hackathon (SIH) 2026 Problem Statement — Bharat Electronics Limited (BEL)  
-> **Domain:** Robotics, Edge-AI, Autonomous Mobile Robots (AMRs), Defense & Industrial Logistics  
-> **Language & Toolchain:** Rust 1.85+ / 2024 Edition  
-> **Key Metrics:** 100% Zero-Collision Guarantee (ISO 3691-4) | Fully Decentralized — No Central Server, No Single Point of Failure | 48 KB Neural Navigation Model enabling 32×32 Fleet Operations | 204 ns Adaptive-Bid Decisions (LinUCB)  
-
----
-
-## 1. Executive Summary
-
-In high-density industrial and defense logistics warehouses, centralized fleet management systems suffer from three critical structural weaknesses:
-
-1. **Single Point of Failure (SPOF):** If the central server, dispatch coordinator, or Wi-Fi access point fails, the entire robot fleet freezes.
-2. **Network Bandwidth & Latency Saturation:** Centralized servers must ingest raw high-frequency telemetry from every AMR and compute global multi-agent paths, scaling exponentially ($O(N!)$ or $O(V^N)$).
-3. **Stale Real-Time State:** Dynamic obstacles (fallen pallets, humans, broken robots) require round-trip server replanning, causing latency delays and hazardous physical bottlenecks.
-
-**THADAM** (**T**rajectory-aware **H**euristics for **A**utonomous **D**ecentralized **A**MR **M**esh) is a fully decentralized, edge-native peer-to-peer (P2P) AMR coordination engine built entirely in Rust. Every robot acts as an autonomous actor running Space-Time A* pathfinding, Contract Net task auctions, and Wait-For-Graph deadlock resolution on local edge compute, communicating directly over asynchronous UDP Multicast mesh networking without requiring any centralized master server.
+> **Edge-Native P2P Robot Fleet Coordination Engine**
+> **SIH 2026 Problem Statement — Bharat Electronics Limited (BEL)**
+> **Stack:** Rust 1.85+ (2024 Edition) | WebGL (Three.js) | ONNX Runtime / Pure-Rust Inference
+> **Highlights:** 100% ISO 3691-4 Zero-Collision Guarantee | Zero Single Point of Failure | 48 KB Embedded Neural Guide | 204 ns Adaptive Bidding
 
 ---
 
-## 1.5 Edge-AI Highlights (New — Beyond the Submitted PPT)
+## Executive Summary
 
-> **TL;DR for evaluators:** THADAM now ships two trained AI components that run **entirely on-robot in pure Rust** — no Python runtime, no cloud calls, no IPC. One *steers navigation*; the other *learns how to bid for tasks*. Both are advisory: all ISO 3691-4 collision-avoidance invariants are enforced identically with AI on or off (76/76 automated tests, zero collisions in 360 benchmarked runs).
+Centralized AMR fleet managers suffer from three major vulnerabilities: **Single Points of Failure (SPOF)**, **network saturation**, and **stale global state** during dynamic obstacle recovery.
 
-| | Neural A* Guidance (Navigation) | LinUCB Adaptive Bidding (Task Allocation) |
-|---|---|---|
-| **What it is** | 48,161-parameter neural network (~48 KB fp32 / 194 KB ONNX, **embedded in the binary**) predicts an obstacle-detour cost-to-go heatmap over a 32×32 window | Contextual bandit (6 context features, 4 bid-weight profiles) per robot that learns **how to weight its own auction bids** from win/loss outcomes |
-| **How it helps** | Reorders the Space-Time A* open set toward detour-friendly cells | Starts exactly at static-default behavior; adapts weights only on evidence (conservative arm = static weights) |
-| **Hard safety** | If search exceeds **800 expansions**, AI is switched off mid-search and pure kinematic A* finishes the plan | Reward only; the auction itself, Lamport arbitration, and award rules are untouched |
-| **Speed** | One inference per planning call (< 0.5 ms class, ARM target) | **204 ns** per bid decision, 66 ns per learning update |
-| **Measured impact** | 32×32 / 8 AMRs: unguided Manhattan-A* completes **0/10 tasks** in 300 ticks → guided **8/10, 0 collisions** | 15×15 / 6 AMRs: task completion **82% → 94%** over 10 seeds; best-or-parity in most of the 36-cell sweep |
-
-**Hybrid routing — the practical setting.** The sweep (10 seeds × 3 grid sizes × 3 fleet sizes × 4 configs = 360 runs) showed the neural guide is decisive exactly in **large, crowded warehouses** and neutral-to-negative in small ones. `GuidancePolicy::Auto` encodes that boundary: guidance engages only when grid side ≥ 32 **and** density ≥ 0.7 robots/100 cells — yielding the best of both worlds at 32×32/8 AMRs (**85% completion, 5.3k expansions** vs 65% / 20.7k for static A*).
-
-**See it live (30 seconds):**
-```bash
-make start                                     # open http://localhost:3000
-# → "Edge-AI Mode (live)" card: flip Deterministic ⇄ Model-Assisted mid-run
-#   and watch makespan/throughput respond on the next planning tick
-```
-
-Headless + reproducible:
-```bash
-cd engine
-cargo run --release -- sim --robots 8 --width 32 --height 32 --tasks 10 \n  --neural-guidance --learned-bids --seed 3      # AI-assisted run
-cargo run --release -- batch --robots 4,6,8 --sizes 15,24,32 --seeds 10 \n  --configs static,learned,neural,full,auto,autofull | python3 ../scripts/aggregate_stats.py
-```
-
-- Model provenance & weights: [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn) 
-- Training pipeline: [`scripts/train_guidance_model.py`](scripts/train_guidance_model.py) 
-- Deep dive: [`docs/ARCHITECTURE.md §3.4`](docs/ARCHITECTURE.md) 
-- Engine-side inference: [`engine/src/ai/guidance.rs`](engine/src/ai/guidance.rs)
+**THADAM** solves this with a fully decentralized, edge-native peer-to-peer (P2P) mesh engine written in Rust. Every AMR acts as an autonomous actor running **Space-Time A*** pathfinding, **Contract Net (CNP)** task auctions, and **Wait-For-Graph (WFG)** deadlock resolution on local compute—communicating via asynchronous UDP Multicast without any central server.
 
 ---
 
-## 2. System Architecture & Core Innovations
+## Key Feature: Embedded Edge-AI Layer (Post-PPT Innovation)
+
+> **Post-PPT Innovation:** Developed after initial SIH submission, THADAM integrates two pure-Rust, zero-cloud Edge-AI components. Both are strictly **advisory**: all ISO 3691-4 safety invariants are deterministically enforced with AI enabled or disabled (76/76 unit/integration tests pass; 0 collisions across 360 benchmarked runs).
+
+* **Live Interactive Web Console:** [thadam.up.railway.app](https://thadam.up.railway.app/)
+* **Model Provenance & Weights:** [huggingface.co/sanjeevafk/thadam-guidance-fcn](https://huggingface.co/sanjeevafk/thadam-guidance-fcn)
+
+| Feature | Neural A* Guidance (Navigation) | LinUCB Adaptive Bidding (Task Allocation) |
+| --- | --- | --- |
+| **Architecture** | 48,161-parameter Dilated FCN (~48 KB FP32 / 194 KB ONNX) embedded in binary | Contextual Bandit ($d=6$ features, 4 weight profiles) per robot |
+| **Role** | Predicts detour heatmaps over a 32×32 window to guide A* open set | Learns optimal bid weightings from auction win/loss context |
+| **Performance** | < 0.5 ms inference per planning call | **204 ns** per bid decision, 66 ns per update |
+| **Hard Safety** | Reverts to pure kinematic A* if search exceeds **800 expansions** | Modifies bid values only; auction arbitration and awards remain deterministic |
+| **Impact** | 32×32 grid (8 AMRs): Unguided A* completes 0/10 tasks; Guided completes **8/10** | 15×15 grid (6 AMRs): Task completion increases from **82% to 94%** |
 
 ```
-+-----------------------------------------------------------------------------------+
-|                            DECENTRALIZED AMR ACTOR NODE                           |
-|                                                                                   |
-|  +---------------------------+  +--------------------------+  +----------------+  |
-|  |     Space-Time A*         |  |   Contract Net Auction   |  | Wait-For-Graph |  |
-|  |  Multi-Agent Pathfinding  |  |    Multi-Factor Bidding  |  | Cycle Breaker  |  |
-|  +-------------+-------------+  +------------+-------------+  +-------+--------+  |
-|                |                             |                        |           |
-|  +-------------+-----------------------------+------------------------+--------+  |
-|  |                 5-Phase Synchronous Edge State Machine                      |  |
-|  |           [ Sense -> Decide -> Flush/Deliver -> Move -> Evaluate ]          |  |
-|  +---------------------------------------+-------------------------------------+  |
-|                                          |                                        |
-|  +---------------------------------------+-------------------------------------+  |
-|  |                       P2P Mesh Network Abstraction                          |  |
-|  |      - In-Memory Tick-Scoped Bus (Simulation & Benchmarking)                |  |
-|  |      - Fault Injection Transport (Drop Rate, Duplication, Latency)          |  |
-|  |      - Real Asynchronous UDP Multicast (239.0.26.123:26123 for Hardware)    |  |
-|  +---------------------------------------+-------------------------------------+  |
-|                                          |                                        |
-|  +---------------------------------------+-------------------------------------+  |
-|  |                   ISO 3691-4 Fail-Safe Hardware HAL                         |  |
-|  |      - Local LiDAR / Sonar Physical Sensing (< 50ms Emergency Brake)        |  |
-|  |      - Serial Bridge to Microcontroller (Arduino Uno / STM32 via 115200)   |  |
-|  +-----------------------------------------------------------------------------+  |
-+-----------------------------------------------------------------------------------+
+               +-------------------------------------------------+
+               |             DECENTRALIZED AMR NODE              |
+               |                                                 |
+               |   +------------------+   +------------------+   |
+               |   | Space-Time A*    |   | Contract Net     |   |
+               |   | (Neural-Guided)  |   | (LinUCB Bidding) |   |
+               |   +--------+---------+   +--------+---------+   |
+               |            |                      |             |
+               |   +--------+----------------------+---------+   |
+               |   |      Wait-For-Graph Cycle Breaker       |   |
+               |   +-------------------+---------------------+   |
+               |                       |                         |
+               |   +-------------------+---------------------+   |
+               |   |    P2P UDP Multicast Mesh (239.0.26.123)|   |
+               |   +-------------------+---------------------+   |
+               |                       |                         |
+               |   +-------------------+---------------------+   |
+               |   |  ISO 3691-4 Safety HAL & Sensor Watchdog |  |
+               |   +-----------------------------------------+   |
+               +-------------------------------------------------+
+
 ```
-
-### 2.1 Discrete Space-Time Reservation Grid with Heading Change Latency
-- Path trajectories are planned in 3-dimensional space-time $(x, y, t)$ with explicit robot heading: $s = (x, y, \theta, t)$ where $\theta \in \{\text{North}, \text{East}, \text{South}, \text{West}\}$.
-- **Turn-Delay Cost Matrix:** Rotational latency is explicitly modeled as a discrete cost penalty rather than unphysical continuous curves: a 90° heading rotation costs a 1-tick delay, while a 180° turnaround costs 2 ticks. Kinematic heuristics (`kinematic_heuristic`) guide A* with rotational overheads.
-- **Stationary Reservation Locks & Edge-Swap Verification:** While changing heading, the AMR locks its current cell in space-time across the turn duration, preventing incoming peers from encroaching. Directional edge-swap constraints ($(u, v) \leftrightarrow (v, u)$) are evaluated at the exact physical departure tick $(t + \Delta t_{\text{turn}})$, mathematically eliminating turning and crossing collisions.
-- When a robot's path is blocked, it negotiates or waits in-place using temporal wait moves before re-routing.
-
-### 2.2 Contract Net Protocol (CNP) Multi-Factor Auctions
-- When a warehouse order arrives, AMRs autonomously broadcast task announcements over the P2P mesh.
-- Idle robots compute a multi-factor marginal cost function:
-  $$\text{Cost} = w_{\text{travel}} \cdot d_{\text{travel}} + w_{\text{congestion}} \cdot C_{\text{pickup}} + w_{\text{battery}} \cdot (1 - B) + w_{\text{delay}} \cdot \text{Delay} + w_{\text{deadline}} \cdot \text{Penalty}$$
-- Bids are collected within a configured tick window (default: 5 ticks), and the contract is awarded deterministically by the authoritative designated auctioneer to the lowest-cost bidder with tie-breaking by Robot ID. Busy robots reject redundant awards, immediately re-opening tasks for peer bidding.
-
-### 2.3 Distributed Wait-For-Graph (WFG) Gossip & Deadlock Cycle Breaking
-- In narrow corridors and 4-way intersections, robots construct local dependency graphs where edge $R_i \to R_j$ indicates that $R_i$ is waiting for $R_j$ to vacate a cell.
-- **Distributed WaitEdge Gossip:** When an AMR yields under conflict, it broadcasts `WaitEdgeMsg { waiter_id, blocking_id, tick, active: true }`. Peer AMRs ingest these messages into their local graphs, enabling transitive global cycle detection without any centralized coordinator.
-- A depth-first search (DFS) algorithm detects circular wait dependencies ($R_1 \to R_2 \to R_3 \to R_1$) in $O(V + E)$ time.
-- Cycles are resolved deterministically: the robot in the cycle with the lowest priority yields and re-routes, then broadcasts `WaitEdgeMsg { active: false }` to purge resolved edges across the mesh.
-
-### 2.4 ISO 3691-4 Fail-Safe Sensing & Dead Chassis Handling
-- Each robot continuously senses obstacles within a 3-cell radius.
-- If a peer AMR breaks down or loses battery, its chassis remains stationary. Surviving peers detect missed heartbeats (5-tick timeout), treat the dead robot chassis as a permanent static obstacle in local maps, re-auction any incomplete tasks, and route around the broken chassis with zero collisions.
-
-### 2.5 Edge-AI Layer: Advisory Neural Guidance & Adaptive Bidding (Default-Aware)
-- **Neural A* Guidance (`engine/src/ai/guidance.rs`):** A 48,161-parameter dilated FCN (~194 KB FP32 ONNX, embedded in the binary) predicts the obstacle-detour residual cost-to-go over a 32×32 window and reorders the Space-Time A* open set as an *advisory* heuristic. Hard reservations and edge-swap checks are untouched (ISO 3691-4), and if the guided search exceeds **800 expansions** the planner falls back to pure kinematic A*. Measured: unguided runs complete 0/10 tasks at 32×32/8 AMRs within 300 ticks; guided runs complete 8/10 with zero collisions.
-- **Hybrid Routing (`GuidancePolicy::Auto`):** Guidance engages only in the large-dense regime (grid ≥ 32 and ≥ 0.7 robots/100 cells) where a 360-run multi-seed sweep shows it wins (32×32/8 AMRs: **85% vs 65%** completion); pure kinematic planning elsewhere.
-- **LinUCB Adaptive Bidding (`engine/src/ai/bandit.rs`):** Each robot learns how to weight its own auction bid features via a 4-arm contextual bandit (d = 6 context). The conservative arm equals the static defaults, so behavior starts at baseline and adapts only on evidence. **204 ns** per bid decision (650 ns budget); fleet-wide arm telemetry in `SimResult`.
-- **Live Toggle:** The Web Operations Console flips the fleet between **Deterministic** and **Model-Assisted** modes mid-run (planner + bidding), with the safety fallback armed in both.
-
-### 2.6 Causal Lamport Logical Clocks & Forward Error Correction (FEC)
-- **Lamport Logical Clocks:** Every P2P broadcast embeds a monotonically increasing Lamport timestamp ($L$). Receivers update $L_{\text{local}} = \max(L_{\text{local}}, L_{\text{msg}}) + 1$. Deterministic arbitration orders concurrent claims by: (1) higher priority, (2) older Lamport timestamp, and (3) lower Robot ID.
-- **UDP Sequence Deduplication:** Monotonic sequence numbers tracked per peer ($O(1)$ filter) immediately reject stale, out-of-order, or duplicated network packets.
-- **Adaptive Dual-Burst FEC & Single-Parity XOR Blocks:** High-priority control frames (`Intent`, `Conflict`, `Yield`) use dual-burst transmission ($N=2$), ensuring survival probability $(1 - p^2)$ at drop rate $p$ (e.g. 96% delivery at 20% loss) with zero buffering latency. Bulk state transfers utilize systematic single-parity XOR block encoding.
-- **Production Multicast Socket SO_REUSEPORT:** `UdpMeshNetwork` creates sockets configured with `SO_REUSEPORT` and `SO_REUSEADDR` via `socket2`, allowing multiple AMR processes to concurrently bind to port `26123` on Linux without socket contention.
 
 ---
 
-## 3. Quantitative Performance & Verification
+## Core Technical Innovations
 
-The system includes a comparative benchmarking pipeline evaluating the decentralized engine against a centralized Conflict-Based Search (CBS) dispatcher running concurrent multi-agent batch pathfinding with FIFO queuing. The numbers below are measured directly from the release binary (`make bench` → `bench --width 15 --height 15 --tasks 5`, 15×15 warehouse, 3-cell aisle spacing):
-
-```
-+------------------------------------------------------------------------------------+
-| SCALE       | DISTRIBUTED MAKESPAN | CENTRALIZED CBS MAKESPAN | THROUGHPUT (DIST/CBS) |
-+-------------+----------------------+--------------------------+----------------------+
-| 2 AMRs      | 97 ticks             | 59 ticks                 | 0.61×                |
-| 4 AMRs      | 62 ticks             | 38 ticks                 | 0.61×                |
-| 6 AMRs      | 60 ticks             | 23 ticks                 | 0.38×                |
-+------------------------------------------------------------------------------------+
-| SAFETY STATS: 0 Vertex Collisions | 0 Edge Swap Collisions | 100% Invariant Pass   |
-+------------------------------------------------------------------------------------+
-```
-
-**Reading the bench honestly.** The decentralized mesh trades raw makespan for operational guarantees a centralized dispatcher cannot provide: it eliminates the central server and Wi-Fi dependency (no single point of failure), replans locally at the edge for dynamic obstacles and dead chassis (no server round-trip), and sustains that throughput under network faults and partitions via the UDP mesh. In this small-grid benchmark the coordination overhead (auction settle + reservation waits) keeps the fleet within 1.6–2.6× the makespan ticks of an omniscient optimal CBS scheduler. On large, congested grids the Edge-AI guidance closes most of that gap — see §1.5: at 32×32 the unguided fleet completes 0/10 tasks in 300 ticks, while the guidance-assisted fleet completes 8/10 with zero collisions. Every benchmarked run maintains the ISO 3691-4 collision invariants: 0 vertex collisions, 0 edge-swap collisions.
-
-All **76 automated tests** across 14 integration suites (plus in-module unit tests, including LinUCB convergence and guidance-routing coverage) pass with 100% reliability:
-- `auction_tests` (6 tests): Idle bidding, congestion scaling, tie-breaking, deadline urgency.
-- `baseline_tests` (2 tests): Centralized concurrent multi-agent CBS pathfinder and FIFO dispatcher validation.
-- `chaos_tests` (3 tests): Dual-burst FEC recovery, network partition split-brain, dead robot re-auction.
-- `deadlock_tests` (9 tests): Simple cycle, 3-robot cycle, multiple independent cycles, priority yielding.
-- `dedup_and_staleness_tests` (6 tests): Monotonic sequence ordering, duplicate rejection, stale view resilience.
-- `full_validation` (1 test): Multi-scale speedup validation and zero-collision invariants.
-- `kinematics_tests` (2 tests): 90° turn-delay cost, 180° aisle turnaround, stationary reservation locks.
-- `lamport_tests` (14 tests): Causal ordering, Lamport clock increment/merge, deterministic tie-breaking.
-- `metrics_tests` (2 tests): Telemetry collector aggregation and comparative metrics.
-- `network_fault_tests` (4 tests): 100% packet loss, packet duplication, and staged latency delivery.
-- `network_tests` (5 tests): Tick-scoped delivery, zero self-echo validation, and SO_REUSEPORT multicast socket sharing.
-- `planner_tests` (9 tests): Space-Time A*, edge-swap conflict detection, bottleneck waiting.
-- `ai` unit tests (4 tests, in-module): LinUCB arm-convergence, static-default parity, reward bounds, and rank-1 update stability under repeated contexts; plus `sim::runner` routing tests for `GuidancePolicy`.
-- `scenario_tests` (3 tests): Choke-point navigation, dynamic obstacle replanning, peer kill reassignment.
-- `simulation_tests` (3 tests): Synchronous 5-phase execution and zero collision multi-task runs.
+1. **Space-Time Grid with Heading Latency:** Pathfinding across $(x, y, \theta, t)$ explicitly models rotational delay (90° = 1 tick, 180° = 2 ticks). AMRs lock space-time cells during turns to eliminate directional edge-swap collisions.
+2. **Contract Net Protocol (CNP) Auctions:** Multi-factor bidding evaluating travel distance, local congestion, battery levels, delay risks, and deadlines.
+3. **Distributed WFG Deadlock Resolution:** Transitive dependency graphs detect cycle bottlenecks ($R_1 \to R_2 \to R_3 \to R_1$) in $O(V+E)$ time using gossip messages. Priority rules force the lowest-priority node to yield and re-route.
+4. **Resilient Network Transport:** Utilizes Lamport logical clocks for causal event ordering, UDP sequence deduplication, dual-burst Forward Error Correction (FEC) for control frames, and single-parity XOR blocks for bulk transfers.
 
 ---
 
-## 4. Single-Command Startup & Quick Start
+## Benchmark Comparison (15×15 Grid)
 
-### 4.1 Using Make (Recommended)
+*Evaluated against a Centralized Conflict-Based Search (CBS) dispatcher running FIFO batch pathfinding:*
 
-To compile and launch the interactive Web Operations Console on port 3000:
+| Fleet Scale | Distributed Makespan | Centralized CBS Makespan | Throughput Ratio (Dist / CBS) | Safety Pass Rate |
+| --- | --- | --- | --- | --- |
+| **2 AMRs** | 97 ticks | 59 ticks | 0.61× | 100% (0 Collisions) |
+| **4 AMRs** | 62 ticks | 38 ticks | 0.61× | 100% (0 Collisions) |
+| **6 AMRs** | 60 ticks | 23 ticks | 0.38× | 100% (0 Collisions) |
+
+> **Trade-Off Analysis:** Decentralized coordination accepts higher makespan latency in small grids to gain **zero single point of failure**, **local dynamic re-planning**, and **mesh network fault tolerance**. On large/congested grids (32×32), Neural Guidance re-establishes high throughput where static heuristics fail.
+
+---
+
+## Quick Start & Local Development
+
+### 1. Launch Local Web Console (3D Digital Twin)
+
 ```bash
 make start
+# Opens local 3D Digital Twin & Live Control Dashboard at http://localhost:3000
+
 ```
 
-Other available Make targets:
-```bash
-make bench        # Run comparative benchmark against Centralized CBS
-make sim          # Run headless simulation (4 AMRs, 8 tasks)
-make test         # Execute all 76 automated tests
-make build        # Compile release binary
-make docker-up    # Launch containerized service via Docker Compose
-make docker-down  # Stop Docker containers
-make clean        # Clean build artifacts
-```
-
-### 4.2 Using Docker Compose
+### 2. Headless Simulation with Edge-AI
 
 ```bash
-docker compose up --build -d
-```
-Access the web console at `http://localhost:3000`.
+cd engine
+cargo run --release -- sim --robots 8 --width 32 --height 32 --tasks 10 \
+  --neural-guidance --learned-bids --seed 3
 
-### 4.3 Using Cargo Directly
+```
+
+### 3. Verification & Benchmarks
 
 ```bash
-# Launch Web Dashboard
-cd engine && cargo run --release -- dashboard --port 3000 --robots 4 --tasks 8
+make test   # Execute all 76 automated integration tests
+make bench  # Run comparative benchmark against Centralized CBS
 
-# Run Benchmarks
-cd engine && cargo run --release -- bench --width 15 --height 15 --tasks 5
-
-# Run Headless Simulation
-cd engine && cargo run --release -- sim --robots 8 --width 20 --height 20 --tasks 15
-
-# Edge-AI variants
-#   --neural-guidance          advisory neural A* guidance (800-expansion fallback)
-#   --learned-bids             LinUCB adaptive auction bidding
-#   --guidance-policy auto     hybrid routing (guidance only in large-dense regimes)
-#   --seed N                   deterministic task/start jitter for statistics
-cd engine && cargo run --release -- sim --robots 8 --width 32 --height 32 --tasks 10 --neural-guidance --learned-bids --seed 3
-
-# Multi-seed statistics sweep + aggregation
-cd engine && cargo run --release -- batch --robots 4,6,8 --sizes 15,24,32 --tasks 6 --seeds 10 --configs static,learned,neural,full,auto,autofull > /tmp/sweep.txt
-python3 scripts/aggregate_stats.py < /tmp/sweep.txt
-
-# LinUCB decision-latency micro-benchmark
-cd engine && cargo run --release --example bandit_latency
 ```
 
 ---
 
-## 5. Web Operations Console Features
+## Team Innovation Igniters
 
-The passive web console (`http://localhost:3000`) provides real-time observational telemetry and interactive fleet controls built with Axum, WebSockets, Three.js WebGL, and HTML5 Canvas:
+Ashish S | Sanjeev kumar S | Kamlesh Y | Prajan SS | Sangamithra B | Sudhishna P
 
-- **Three.js WebGL 3D Digital Twin:** Real-time 3D rendered warehouse digital twin with industrial lighting, extruded metal shelving units, rotating LiDAR pucks, differential drive wheel animation, floating battery SoC % badges, and glowing 3D Space-Time trajectory ribbons. Supports intuitive mouse orbit controls (click-drag to orbit, wheel to zoom) and fallback to 2D isometric canvas.
-- **Interactive Blocked Aisle Toggle (`🚨 Block Aisle`):** One-click button that dynamically injects obstacle blocks across primary warehouse corridors, forcing active AMRs to sense obstructions in real time and compute zero-collision reroutes.
-- **Fleet Scale Selector:** Dynamically scale the fleet between 2, 4, 6, 8, and 10 AMRs in real-time with automatic path assignment and unique robot coloring.
-- **Interactive Wall Tool:** Click any warehouse cell in 2D or 3D to inject or remove dynamic obstacles and observe instantaneous peer rerouting.
-- **Custom Task Dispatcher:** Click two coordinates on the grid (Pickup $\to$ Dropoff) to inject a custom order into the live P2P auction pool.
-- **Direct AMR Move Tool:** Select any AMR and click a destination cell to issue direct waypoint overrides.
-- **Preset Test Scenarios:**
-  1. *Head-On Bottleneck:* 2 AMRs crossing a 1-lane corridor.
-  2. *4-Way Gridlock:* 4 AMRs crossing a 4-way intersection simultaneously.
-  3. *Fleet Rush:* 8 concurrent orders distributed across the warehouse.
-  4. *Blocked Aisle Corridor:* 4 AMRs in high-density corridors executing dynamic rerouting around a central obstruction.
-- **Chaos Bench & Fault Injection:** Live packet loss slider (0% to 50%) demonstrating dual-burst ($N=2$) and XOR parity resilience, plus individual AMR kill/restore buttons.
-- **Speed Controller:** Live tick rate slider (20ms to 400ms per tick).
-- **Edge-AI Mode Toggle (live):** Flip the whole fleet between **Deterministic** (pure kinematic planner + static auction weights) and **Model-Assisted** (neural A* guidance + LinUCB adaptive bids) mid-run — effective on the next planning tick, no restart, 800-expansion safety fallback armed in both modes.
-
----
-
-## 6. Hardware-in-the-Loop (HIL) Physical Deployment
-
-The architecture supports mixed-reality Hardware-in-the-Loop (HIL) operation where 1 physical robot operates alongside $N$ virtual peer robots:
-
-- **Raspberry Pi 4B/5:** Runs the coordination engine binary, acts as AMR-1, and communicates with virtual peers over UDP Multicast (`239.0.26.123:26123`).
-- **Arduino Uno:** Connected to the Pi via USB Serial (`115200 8N1`), controlling an L298N motor driver, 2x DC motors, an HC-SR04 ultrasonic distance sensor, and status LEDs.
-- **Physical HIL Verification Script (`scripts/hil_serial_mock.py`):** Standalone zero-dependency Python verification mock that simulates 10 Hz ultrasonic telemetry with physical Gaussian sensor jitter ($\sigma = 1.2\text{ cm}$), threshold triggers (`OBS:11.4`), command echo handling, and the 500ms safety watchdog timer.
-  ```bash
-  # Run automated 10-test HIL loopback verification
-  python3 scripts/hil_serial_mock.py --mode test
-
-  # Spawn virtual Linux serial port (/tmp/ttyHIL_AMR) for external terminal connection
-  python3 scripts/hil_serial_mock.py --mode pty
-  ```
-- **Hardware Failsafe Watchdog:** If serial communication between the Pi and Arduino drops for $> 500\text{ ms}$, the microcontroller firmware automatically cuts motor power.
-- **Physical Sensor Overrides:** When an obstacle is detected within 15 cm by the physical ultrasonic sensor, the Arduino sends an immediate `OBS:<dist>` packet, causing the Space-Time planner on the Pi to halt the physical robot and replan around the obstacle.
-
-Detailed hardware wiring pinouts, serial protocol definitions, and architecture specifications are available in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#5-hardware-in-the-loop-hil-integration-architecture).
-
----
-
-## 7. Team Innovation Igniters
-
-* Ashish S
-* Sanjeev kumar S
-* Kamlesh Y
-* Prajan SS
-* Sangamithra B
-* Sudhishna P
-
----
-
-## 8. License & Attribution
-
-Developed for the **Smart India Hackathon (SIH) 2026** by Team **Innovation Igniters**. under the **Bharat Electronics Limited (BEL)** Problem Statement (26123): *Edge-AI Based Distributed Fleet Coordination for Autonomous Mobile Robots (AMRs) in Smart Warehouses*.
+**Developed for SIH 2026** | Bharat Electronics Limited (BEL) Problem Statement 26123
